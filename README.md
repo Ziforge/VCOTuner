@@ -4,6 +4,8 @@
 
 A JUCE based tuner application for VCOs, VCFs and other analog gear. It runs on Windows, Mac and Linux.
 
+![VCOTuner Screenshot](docs/screenshot.png)
+
 This is a fork of [TheSlowGrowth/VCOTuner](https://github.com/TheSlowGrowth/VCOTuner) with:
 - Updated JUCE to 8.0.4 for macOS Sequoia (15.x) compatibility
 - Added CV output calibration feature for DC-coupled audio interfaces
