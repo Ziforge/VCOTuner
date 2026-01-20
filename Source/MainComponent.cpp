@@ -11,6 +11,7 @@
 #include "../JuceLibraryCode/JuceHeader.h"
 #include "MainComponent.h"
 #include "ReportCreatorWindow.h"
+#include "CVCalibrationWindow.h"
 
 MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
 {
@@ -184,15 +185,18 @@ void MainComponent::buttonClicked (Button* bttn)
     }
     else if (bttn == &cvCalibration)
     {
-        // TODO: Launch CVCalibrationWindow
-        NativeMessageBox::showMessageBox(AlertWindow::AlertIconType::InfoIcon,
-            "CV Calibration",
-            "CV Calibration feature coming soon!\n\n"
-            "This will allow you to:\n"
-            "- Output precise CV via DC-coupled interface\n"
-            "- Auto-calibrate VCO tracking\n"
-            "- Generate calibration tables\n"
-            "- Export to CSV, JSON, and o_C formats");
+        CVCalibrationWindow* calibrationWindow = new CVCalibrationWindow(&tuner, cvOutput.get(), &display);
+
+        DialogWindow::LaunchOptions o;
+        o.content.setOwned(calibrationWindow);
+        o.dialogTitle                   = "CV Calibration";
+        o.componentToCentreAround       = this;
+        o.dialogBackgroundColour        = Colours::lightgrey;
+        o.escapeKeyTriggersCloseButton  = false;
+        o.resizable                     = true;
+        o.useNativeTitleBar             = true;
+
+        o.launchAsync();
     }
 }
 

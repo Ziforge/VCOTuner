@@ -92,6 +92,9 @@ target_sources(VCOTuner
         Source/Export/JSONExporter.h
         Source/Export/OrnamentCrimeExporter.cpp
         Source/Export/OrnamentCrimeExporter.h
+        # CV Calibration Window UI
+        Source/CVCalibrationWindow.cpp
+        Source/CVCalibrationWindow.h
 )
 
 # `target_compile_definitions` adds some preprocessor definitions to our target. In a Projucer
