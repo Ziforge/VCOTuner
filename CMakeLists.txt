@@ -95,6 +95,10 @@ target_sources(VCOTuner
         # CV Calibration Window UI
         Source/CVCalibrationWindow.cpp
         Source/CVCalibrationWindow.h
+        # Modern UI
+        Source/ModernLookAndFeel.h
+        Source/TunerDisplay.cpp
+        Source/TunerDisplay.h
 )
 
 # `target_compile_definitions` adds some preprocessor definitions to our target. In a Projucer

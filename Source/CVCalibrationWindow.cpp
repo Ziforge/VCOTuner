@@ -11,6 +11,7 @@
 #include "Export/CSVExporter.h"
 #include "Export/JSONExporter.h"
 #include "Export/OrnamentCrimeExporter.h"
+#include "ModernLookAndFeel.h"
 
 //==============================================================================
 // CVSetupScreen Implementation
@@ -136,7 +137,11 @@ void CVSetupScreen::resized()
 
 void CVSetupScreen::paint(Graphics& g)
 {
-    g.fillAll(Colours::white);
+    g.fillAll(ModernLookAndFeel::Colors::background);
+
+    // Draw panel background
+    auto bounds = getLocalBounds().toFloat().reduced(10);
+    ModernLookAndFeel::drawPanel(g, bounds, 12.0f);
 }
 
 void CVSetupScreen::buttonClicked(Button* button)
@@ -261,28 +266,33 @@ void CVRunningScreen::resized()
 
 void CVRunningScreen::paint(Graphics& g)
 {
-    g.fillAll(Colours::white);
+    g.fillAll(ModernLookAndFeel::Colors::background);
+
+    // Draw panel background
+    auto panelBounds = getLocalBounds().toFloat().reduced(10);
+    ModernLookAndFeel::drawPanel(g, panelBounds, 12.0f);
 
     // Draw simple error history visualization
     if (!errorHistory.empty())
     {
-        auto historyArea = getLocalBounds().reduced(20);
+        auto historyArea = getLocalBounds().reduced(30);
         historyArea.removeFromTop(220);
         historyArea.removeFromBottom(50);
 
-        g.setColour(Colours::lightgrey);
-        g.fillRect(historyArea);
+        // Graph background
+        g.setColour(ModernLookAndFeel::Colors::panel);
+        g.fillRoundedRectangle(historyArea.toFloat(), 6.0f);
 
-        g.setColour(Colours::grey);
-        g.drawRect(historyArea);
+        g.setColour(ModernLookAndFeel::Colors::panelLight);
+        g.drawRoundedRectangle(historyArea.toFloat(), 6.0f, 1.0f);
 
         // Draw zero line
         int centerY = historyArea.getCentreY();
-        g.setColour(Colours::darkgrey);
-        g.drawHorizontalLine(centerY, (float)historyArea.getX(), (float)historyArea.getRight());
+        g.setColour(ModernLookAndFeel::Colors::textDim);
+        g.drawHorizontalLine(centerY, (float)historyArea.getX() + 5, (float)historyArea.getRight() - 5);
 
         // Draw error points
-        g.setColour(Colours::blue);
+        g.setColour(ModernLookAndFeel::Colors::accent);
         float xStep = historyArea.getWidth() / (float)std::max(1, (int)errorHistory.size() - 1);
         float scale = historyArea.getHeight() / 100.0f;  // Scale for ±50 cents
 
@@ -304,7 +314,8 @@ void CVRunningScreen::paint(Graphics& g)
         }
 
         // Labels
-        g.setColour(Colours::black);
+        g.setColour(ModernLookAndFeel::Colors::textSecondary);
+        g.setFont(Font(10.0f));
         g.drawText("+50c", historyArea.getX() - 40, historyArea.getY() - 10, 35, 20, Justification::right);
         g.drawText("-50c", historyArea.getX() - 40, historyArea.getBottom() - 10, 35, 20, Justification::right);
         g.drawText("0", historyArea.getX() - 20, centerY - 10, 15, 20, Justification::right);
@@ -464,7 +475,11 @@ void CVResultsScreen::resized()
 
 void CVResultsScreen::paint(Graphics& g)
 {
-    g.fillAll(Colours::white);
+    g.fillAll(ModernLookAndFeel::Colors::background);
+
+    // Draw panel background
+    auto bounds = getLocalBounds().toFloat().reduced(10);
+    ModernLookAndFeel::drawPanel(g, bounds, 12.0f);
 }
 
 void CVResultsScreen::buttonClicked(Button* button)
@@ -507,14 +522,17 @@ int CVResultsScreen::getNumRows()
 void CVResultsScreen::paintRowBackground(Graphics& g, int rowNumber, int /*width*/, int /*height*/, bool rowIsSelected)
 {
     if (rowIsSelected)
-        g.fillAll(Colours::lightblue);
+        g.fillAll(ModernLookAndFeel::Colors::accent.withAlpha(0.3f));
     else if (rowNumber % 2)
-        g.fillAll(Colour(0xffeeeeee));
+        g.fillAll(ModernLookAndFeel::Colors::panelLight.withAlpha(0.3f));
+    else
+        g.fillAll(ModernLookAndFeel::Colors::panel);
 }
 
 void CVResultsScreen::paintCell(Graphics& g, int rowNumber, int columnId, int width, int height, bool /*rowIsSelected*/)
 {
-    g.setColour(Colours::black);
+    g.setColour(ModernLookAndFeel::Colors::textPrimary);
+    g.setFont(Font(12.0f));
 
     if (rowNumber >= 0 && rowNumber < calibrationTable.getEntryCount())
     {
@@ -530,9 +548,11 @@ void CVResultsScreen::paintCell(Graphics& g, int rowNumber, int columnId, int wi
             case 5:
                 text = String(entry.errorCents, 1);
                 if (std::abs(entry.errorCents) > 10)
-                    g.setColour(Colours::red);
+                    g.setColour(ModernLookAndFeel::Colors::meterBad);
                 else if (std::abs(entry.errorCents) > 5)
-                    g.setColour(Colours::orange);
+                    g.setColour(ModernLookAndFeel::Colors::meterWarn);
+                else
+                    g.setColour(ModernLookAndFeel::Colors::meter);
                 break;
         }
 

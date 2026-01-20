@@ -12,33 +12,41 @@
 #include "MainComponent.h"
 #include "ReportCreatorWindow.h"
 #include "CVCalibrationWindow.h"
+#include "ModernLookAndFeel.h"
+#include "TunerDisplay.h"
 
-MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
+// Global look and feel instance
+static ModernLookAndFeel modernLookAndFeel;
+
+MainComponent::MainComponent() : tuner(&deviceManager), tunerDisplay(&tuner), display(&tuner)
 {
+    // Apply modern look and feel
+    LookAndFeel::setDefaultLookAndFeel(&modernLookAndFeel);
+
     std::unique_ptr<XmlElement> savedAudioState (getAppProperties().getUserSettings()
                                                ->getXmlValue ("audioDeviceState"));
-    
+
     // Enable both input (1) and output (1) for CV generation
     deviceManager.initialise (1, 1, savedAudioState.get(), true);
 
     // Create CV output manager
     cvOutput = std::make_unique<CVOutputManager>();
     tuner.setCVOutputManager(cvOutput.get());
-    
+
     setVisible (true);
-    
+
     Process::setPriority (Process::HighPriority);
-    
+
     audioSettings.setName("AudioSettingsBttn");
     audioSettings.setButtonText("Audio Settings");
     audioSettings.addListener(this);
     addAndMakeVisible(&audioSettings);
-    
+
     startStop.setName("StartStopBttn");
     startStop.setButtonText("Start");
     startStop.addListener(this);
     addAndMakeVisible(&startStop);
-    
+
     report.setName("ReportBttn");
     report.setButtonText("Create Report");
     report.addListener(this);
@@ -52,12 +60,12 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
     statusLabel.setName("Status Label");
     statusLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(&statusLabel);
-    
+
     regimeLabel.setName("Regime Label");
     regimeLabel.setText("Pitch range: ", dontSendNotification);
     regimeLabel.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(&regimeLabel);
-    
+
     regime.setName("RegimeSelector");
     regime.addItemList(StringArray(regimeTexts, numRegimes), 1);
     regime.addListener(this);
@@ -66,12 +74,12 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
     else
         regime.setSelectedId(1);
     addAndMakeVisible(&regime);
-    
+
     resolutionLabel.setName("Resolution Label");
     resolutionLabel.setText("Resolution: ", dontSendNotification);
     resolutionLabel.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(&resolutionLabel);
-    
+
     resolution.setName("ResolutionSelector");
     resolution.addItemList(StringArray(resolutionsTexts, numResolutions), 1);
     resolution.addListener(this);
@@ -80,11 +88,18 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
     else
         resolution.setSelectedId(1);
     addAndMakeVisible(&resolution);
-    
-    display.setName("ResultsDisplay");
-    addAndMakeVisible(&display);
-    
+
+    // Create tabbed component with tuner and chart views
+    tabs = std::make_unique<TabbedComponent>(TabbedButtonBar::TabsAtTop);
+    tabs->setTabBarDepth(32);
+    tabs->setOutline(0);
+    tabs->addTab("Tuner", ModernLookAndFeel::Colors::background, &tunerDisplay, false);
+    tabs->addTab("Chart", ModernLookAndFeel::Colors::background, &display, false);
+    tabs->setCurrentTabIndex(0);  // Start on Tuner tab
+    addAndMakeVisible(tabs.get());
+
     tuner.addListener(this);
+    tuner.addListener(&tunerDisplay);
     tuner.addListener(&display);
     if (getAppProperties().getUserSettings()->containsKey("MIDIChannel"))
         tuner.setMidiChannel(getAppProperties().getUserSettings()->getIntValue("MIDIChannel"));
@@ -107,6 +122,8 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
 MainComponent::~MainComponent()
 {
     tuner.removeListener(this);
+    tuner.removeListener(&tunerDisplay);
+    tuner.removeListener(&display);
     getAppProperties().getUserSettings()->setValue("RegimeID", regime.getSelectedId());
     getAppProperties().getUserSettings()->setValue("ResolutionID", resolution.getSelectedId());
 }
@@ -116,8 +133,8 @@ void MainComponent::resized()
 {
     const int borderWidth = 10;
     const int buttonWidth = 100;
-    const int buttonHeight = 20;
-    
+    const int buttonHeight = 24;
+
     audioSettings.setBounds(borderWidth, borderWidth, buttonWidth, buttonHeight);
     cvCalibration.setBounds(audioSettings.getRight() + borderWidth, borderWidth, buttonWidth, buttonHeight);
     report.setBounds(getWidth() - buttonWidth - borderWidth, borderWidth, buttonWidth, buttonHeight);
@@ -126,23 +143,25 @@ void MainComponent::resized()
                           borderWidth,
                           startStop.getX() - borderWidth - borderWidth - cvCalibration.getRight(),
                           buttonHeight);
-    
+
     regime.setBounds(getWidth() - 120 - borderWidth, audioSettings.getBottom() + borderWidth, 120, buttonHeight);
     regimeLabel.setBounds(regime.getX() - 80 - borderWidth, audioSettings.getBottom() + borderWidth, 80, buttonHeight);
     resolution.setBounds(regimeLabel.getX() - 120 - borderWidth, audioSettings.getBottom() + borderWidth, 120, buttonHeight);
     resolutionLabel.setBounds(resolution.getX() - 80 - borderWidth, audioSettings.getBottom() + borderWidth, 80, buttonHeight);
-    
-    display.setBounds(borderWidth,
-                      regimeLabel.getBottom() + borderWidth,
-                      getWidth() - 2 * borderWidth,
-                      getHeight() - 2* borderWidth - regimeLabel.getBottom());
 
+    // Tabbed component takes the main area
+    if (tabs != nullptr)
+    {
+        tabs->setBounds(borderWidth,
+                        regimeLabel.getBottom() + borderWidth,
+                        getWidth() - 2 * borderWidth,
+                        getHeight() - 2 * borderWidth - regimeLabel.getBottom());
+    }
 }
 
 void MainComponent::paint(Graphics& g)
 {
-    g.setColour(Colours::lightgrey);
-    g.fillAll();
+    g.fillAll(ModernLookAndFeel::Colors::background);
 }
 
 

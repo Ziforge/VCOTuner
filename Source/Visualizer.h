@@ -27,7 +27,12 @@ public:
     virtual void newMeasurementReady(const VCOTuner::measurement_t& m);
     
     void clearCache() { measurements.clear(); }
+
 private:
+    void drawTopInfoPanel(Graphics& g, int width, int panelHeight);
+    void drawTunerDial(Graphics& g, Rectangle<float> bounds, float cents, int midiNote, float frequency);
+    void drawTunerArc(Graphics& g, float centerX, float centerY, float radius, float cents);
+
     /** holds the list of completed measurements */
     Array<VCOTuner::measurement_t> measurements;
     

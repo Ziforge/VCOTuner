@@ -13,6 +13,7 @@
 
 #include "VCOTuner.h"
 #include "Visualizer.h"
+#include "TunerDisplay.h"
 #include "CVOutput/CVOutputManager.h"
 
 //==============================================================================
@@ -55,6 +56,10 @@ private:
     TextButton startStop;
     TextButton report;
     TextButton cvCalibration;
+
+    // Tabbed display with tuner and chart views
+    std::unique_ptr<TabbedComponent> tabs;
+    TunerDisplay tunerDisplay;
     Visualizer display;
     Label statusLabel;
     Label regimeLabel;

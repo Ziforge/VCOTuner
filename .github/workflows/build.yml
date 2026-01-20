@@ -21,11 +21,56 @@ jobs:
     - name: Build
       run: cmake --build build --config Release
 
+    - name: List build artifacts
+      run: find build -name "VCOTuner*" -type f -o -name "VCOTuner*.app" -type d 2>/dev/null || true
+
+    - name: Ad-hoc code sign for distribution
+      run: |
+        APP_PATH=$(find build -name "VCOTuner.app" -type d | head -1)
+        if [ -n "$APP_PATH" ]; then
+          echo "Signing app at: $APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          echo "Verifying signature..."
+          codesign -vvv "$APP_PATH" || true
+        fi
+
+    - name: Create distribution ZIP
+      run: |
+        APP_PATH=$(find build -name "VCOTuner.app" -type d | head -1)
+        if [ -n "$APP_PATH" ]; then
+          cd $(dirname "$APP_PATH")
+          # Create README for users
+          cat > README.txt << 'EOF'
+        VCOTuner - VCO Calibration Tool
+
+        INSTALLATION:
+        1. Drag VCOTuner.app to your Applications folder
+
+        FIRST RUN (macOS Gatekeeper):
+        Since this app is not notarized, macOS may block it.
+        To run it:
+        1. Right-click (or Control-click) on VCOTuner.app
+        2. Select "Open" from the context menu
+        3. Click "Open" in the dialog that appears
+        4. The app will now run normally in the future
+
+        Alternatively, run this in Terminal:
+        xattr -cr /Applications/VCOTuner.app
+
+        For more info: https://github.com/Ziforge/VCOTuner
+        EOF
+          zip -r VCOTuner-macOS.zip VCOTuner.app README.txt
+          mv VCOTuner-macOS.zip ../..
+        fi
+
     - name: Upload macOS Build
       uses: actions/upload-artifact@v4
       with:
         name: VCOTuner-macOS
-        path: build/VCOTuner_artefacts/Release/VCOTuner.app
+        path: |
+          build/VCOTuner-macOS.zip
+        if-no-files-found: warn
+        retention-days: 90
 
   build-windows:
     runs-on: windows-latest
@@ -40,11 +85,38 @@ jobs:
     - name: Build
       run: cmake --build build --config Release
 
+    - name: List build artifacts
+      run: Get-ChildItem -Recurse -Path build -Filter "VCOTuner*" | Select-Object FullName
+      shell: pwsh
+
+    - name: Create distribution ZIP
+      run: |
+        $exe = Get-ChildItem -Recurse -Path build -Filter "VCOTuner.exe" | Select-Object -First 1
+        if ($exe) {
+          $dir = Split-Path $exe.FullName
+          @"
+        VCOTuner - VCO Calibration Tool
+
+        INSTALLATION:
+        1. Extract VCOTuner.exe to a folder of your choice
+        2. Double-click VCOTuner.exe to run
+
+        Windows may show a SmartScreen warning since the app is not signed.
+        Click "More info" then "Run anyway" to proceed.
+
+        For more info: https://github.com/Ziforge/VCOTuner
+        "@ | Out-File -FilePath "$dir\README.txt" -Encoding UTF8
+          Compress-Archive -Path "$dir\VCOTuner.exe","$dir\README.txt" -DestinationPath "build\VCOTuner-Windows.zip"
+        }
+      shell: pwsh
+
     - name: Upload Windows Build
       uses: actions/upload-artifact@v4
       with:
         name: VCOTuner-Windows
-        path: build/VCOTuner_artefacts/Release/VCOTuner.exe
+        path: build/VCOTuner-Windows.zip
+        if-no-files-found: warn
+        retention-days: 90
 
   build-linux:
     runs-on: ubuntu-latest
@@ -64,8 +136,35 @@ jobs:
     - name: Build
       run: cmake --build build --config Release
 
+    - name: List build artifacts
+      run: find build -name "VCOTuner*" -type f 2>/dev/null || true
+
+    - name: Create distribution tarball
+      run: |
+        EXE_PATH=$(find build -name "VCOTuner" -type f -executable | head -1)
+        if [ -n "$EXE_PATH" ]; then
+          mkdir -p dist
+          cp "$EXE_PATH" dist/
+          cat > dist/README.txt << 'EOF'
+        VCOTuner - VCO Calibration Tool
+
+        INSTALLATION:
+        1. Extract the archive
+        2. Make the binary executable: chmod +x VCOTuner
+        3. Run: ./VCOTuner
+
+        DEPENDENCIES:
+        You may need to install: libasound2, libfreetype6, libx11-6
+
+        For more info: https://github.com/Ziforge/VCOTuner
+        EOF
+          tar -czvf build/VCOTuner-Linux.tar.gz -C dist .
+        fi
+
     - name: Upload Linux Build
       uses: actions/upload-artifact@v4
       with:
         name: VCOTuner-Linux
-        path: build/VCOTuner_artefacts/Release/VCOTuner
+        path: build/VCOTuner-Linux.tar.gz
+        if-no-files-found: warn
+        retention-days: 90
