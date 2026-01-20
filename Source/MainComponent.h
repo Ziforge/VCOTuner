@@ -13,6 +13,7 @@
 
 #include "VCOTuner.h"
 #include "Visualizer.h"
+#include "CVOutput/CVOutputManager.h"
 
 //==============================================================================
 ApplicationProperties& getAppProperties();
@@ -45,6 +46,7 @@ public:
 private:
     //==============================================================================
     AudioDeviceManager deviceManager;
+    std::unique_ptr<CVOutputManager> cvOutput;
     VCOTuner tuner;
     
     void showAudioSettings();
@@ -52,6 +54,7 @@ private:
     TextButton audioSettings;
     TextButton startStop;
     TextButton report;
+    TextButton cvCalibration;
     Visualizer display;
     Label statusLabel;
     Label regimeLabel;

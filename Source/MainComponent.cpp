@@ -17,7 +17,12 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
     std::unique_ptr<XmlElement> savedAudioState (getAppProperties().getUserSettings()
                                                ->getXmlValue ("audioDeviceState"));
     
-    deviceManager.initialise (1, 0, savedAudioState.get(), true);
+    // Enable both input (1) and output (1) for CV generation
+    deviceManager.initialise (1, 1, savedAudioState.get(), true);
+
+    // Create CV output manager
+    cvOutput = std::make_unique<CVOutputManager>();
+    tuner.setCVOutputManager(cvOutput.get());
     
     setVisible (true);
     
@@ -37,7 +42,12 @@ MainComponent::MainComponent() : tuner(&deviceManager), display(&tuner)
     report.setButtonText("Create Report");
     report.addListener(this);
     addAndMakeVisible(&report);
-    
+
+    cvCalibration.setName("CVCalibrationBttn");
+    cvCalibration.setButtonText("CV Calibration");
+    cvCalibration.addListener(this);
+    addAndMakeVisible(&cvCalibration);
+
     statusLabel.setName("Status Label");
     statusLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(&statusLabel);
@@ -108,11 +118,12 @@ void MainComponent::resized()
     const int buttonHeight = 20;
     
     audioSettings.setBounds(borderWidth, borderWidth, buttonWidth, buttonHeight);
+    cvCalibration.setBounds(audioSettings.getRight() + borderWidth, borderWidth, buttonWidth, buttonHeight);
     report.setBounds(getWidth() - buttonWidth - borderWidth, borderWidth, buttonWidth, buttonHeight);
     startStop.setBounds(report.getX() - buttonWidth - borderWidth, borderWidth, buttonWidth, buttonHeight);
-    statusLabel.setBounds(audioSettings.getRight() + borderWidth,
+    statusLabel.setBounds(cvCalibration.getRight() + borderWidth,
                           borderWidth,
-                          startStop.getX() - borderWidth - borderWidth - audioSettings.getRight(),
+                          startStop.getX() - borderWidth - borderWidth - cvCalibration.getRight(),
                           buttonHeight);
     
     regime.setBounds(getWidth() - 120 - borderWidth, audioSettings.getBottom() + borderWidth, 120, buttonHeight);
@@ -159,7 +170,7 @@ void MainComponent::buttonClicked (Button* bttn)
     else if (bttn == &report)
     {
         ReportCreatorWindow* reportWindow = new ReportCreatorWindow(&tuner, &display);
-        
+
         DialogWindow::LaunchOptions o;
         o.content.setOwned (reportWindow);
         o.dialogTitle                   = "Create Report";
@@ -168,8 +179,20 @@ void MainComponent::buttonClicked (Button* bttn)
         o.escapeKeyTriggersCloseButton  = false;
         o.resizable                     = true;
         o.useNativeTitleBar             = true;
-        
+
         o.launchAsync();
+    }
+    else if (bttn == &cvCalibration)
+    {
+        // TODO: Launch CVCalibrationWindow
+        NativeMessageBox::showMessageBox(AlertWindow::AlertIconType::InfoIcon,
+            "CV Calibration",
+            "CV Calibration feature coming soon!\n\n"
+            "This will allow you to:\n"
+            "- Output precise CV via DC-coupled interface\n"
+            "- Auto-calibrate VCO tracking\n"
+            "- Generate calibration tables\n"
+            "- Export to CSV, JSON, and o_C formats");
     }
 }
 

@@ -13,6 +13,8 @@
 
 #include "../JuceLibraryCode/JuceHeader.h"
 
+class CVOutputManager;
+
 class VCOTuner: public ChangeListener,
                 private Timer,
                 public AudioIODeviceCallback
@@ -95,8 +97,13 @@ public:
     
     void addListener(Listener* l);
     void removeListener(Listener* l);
-    
+
+    // CV Output integration
+    void setCVOutputManager(CVOutputManager* manager) { cvOutputManager = manager; }
+    CVOutputManager* getCVOutputManager() { return cvOutputManager; }
+
 private:
+    CVOutputManager* cvOutputManager = nullptr;
     // states for the state machine
     enum State
     {

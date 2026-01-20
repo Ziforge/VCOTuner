@@ -10,6 +10,7 @@
 
 #include "../JuceLibraryCode/JuceHeader.h"
 #include "VCOTuner.h"
+#include "CVOutput/CVOutputManager.h"
 
 VCOTuner::VCOTuner(AudioDeviceManager* d)
 {
@@ -565,10 +566,20 @@ void VCOTuner::audioDeviceIOCallback (const float** inputChannelData,
         }
     }
 
-    if (outputChannelData != nullptr)
-    { 
-    	AudioBuffer<float> outputBuffer(outputChannelData, numOutputChannels, numSamples);
-    	outputBuffer.clear();
+    // Handle CV output
+    if (outputChannelData != nullptr && numOutputChannels > 0)
+    {
+        AudioBuffer<float> outputBuffer(outputChannelData, numOutputChannels, numSamples);
+
+        // Use CVOutputManager if available and active
+        if (cvOutputManager != nullptr && cvOutputManager->isActive())
+        {
+            cvOutputManager->fillOutputBuffer(outputBuffer.getWritePointer(0), numSamples);
+        }
+        else
+        {
+            outputBuffer.clear();
+        }
     }
 }
 
