@@ -2,38 +2,28 @@
 
 [![Build](https://github.com/Ziforge/VCOTuner/actions/workflows/build.yml/badge.svg)](https://github.com/Ziforge/VCOTuner/actions/workflows/build.yml)
 
-A JUCE based tuner application for VCOs, VCFs and other analog gear. It runs on Windows, Mac and Linux.
+A JUCE-based precision tuner for VCOs, VCFs and other analog gear. Runs on Windows, macOS (including Sequoia 15.x), and Linux.
 
 ![VCOTuner Screenshot](docs/screenshot.png)
 
-This is a fork of [TheSlowGrowth/VCOTuner](https://github.com/TheSlowGrowth/VCOTuner) with:
-- Updated JUCE to 8.0.4 for macOS Sequoia (15.x) compatibility
-- Added CV output calibration feature for DC-coupled audio interfaces
+## Features
 
-## Overview
+- **Scientific Tuner Display** - High-precision frequency measurement with Hz and cents error display
+- **Tabbed Interface** - Separate Tuner and Chart views
+- **Pitch Tracking** - Real-time frequency detection with deviation meter
+- **Tuning Reports** - Export measurements as PNG with device info
 
-**How tuning usually works** - Tuning is usually a tedious ping-pong game between adjusting a fine tune pot and adjusting one or multiple tuning trimmers. Whenever a trimmer has been adjusted, the fine tune pot has to be adjusted as well to bring the pitch back to a specific note.
+This is a fork of [TheSlowGrowth/VCOTuner](https://github.com/TheSlowGrowth/VCOTuner) updated for modern macOS compatibility.
 
-**How tuning works with the app** - The app spits out midi notes and measures the frequency. This is done for multiple notes in a user selectable note range. At first the note in the center of the range is selected as the reference pitch. All other measurements will be compared to this reference. This removes the need to adjust the fine tune pot. Tuning the oscillator is just a matter of tweaking the trimmers and looking at the screen. Takes no longer than a few minutes. See the video below.
+## How It Works
 
-**The application can also produce a report** that features measurements in the highest accuracy and over a very wide pitch range. Reports are saved as a *.png file including information on the device under test and the CV interface that was used.
+Traditional VCO tuning requires constant back-and-forth between fine tune and trimmer adjustments. VCOTuner eliminates this by:
 
-## New: CV Calibration Feature
+1. Outputting MIDI notes across a selectable range
+2. Measuring the actual frequency for each note
+3. Using a center reference pitch so you can focus solely on trimmer adjustments
 
-This fork adds CV output and calibration capabilities:
-
-- **CV Output** - Generate precise voltages via DC-coupled audio interfaces (Expert Sleepers ES-8/ES-9, MOTU, etc.)
-- **Automated Calibration** - Automated sweep: outputs CV, measures VCO frequency, builds correction tables
-- **Voltage Standards** - Support for both 1V/Oct and Hz/V standards
-- **Export Formats** - Export calibration data to CSV, JSON, and Ornament & Crime compatible formats
-
-## Video Tutorial
-
-This video shows how to use it:
-
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=JpMFTOBXuv8
-" target="_blank"><img src="http://img.youtube.com/vi/JpMFTOBXuv8/0.jpg"
-alt="Youtube tutorial video" width="400" border="0" /></a>
+Tuning takes minutes instead of hours.
 
 ## Download
 
@@ -86,14 +76,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-## Help to improve it
+## Issues
 
-[If you find bugs, please raise an issue here!](https://github.com/Ziforge/VCOTuner/issues)
+[Report bugs or request features here](https://github.com/Ziforge/VCOTuner/issues)
 
 ## Credits
 
 Original application by [TheSlowGrowth](https://github.com/TheSlowGrowth/VCOTuner)
-
-## Are you on Muff's?
-
-[Here's a thread on MuffWiggler. Post your tuning reports here, if you like](https://www.muffwiggler.com/forum/viewtopic.php?p=2276045)
