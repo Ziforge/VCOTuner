@@ -39,35 +39,34 @@ jobs:
         APP_PATH=$(find build -name "VCOTuner.app" -type d | head -1)
         if [ -n "$APP_PATH" ]; then
           cd $(dirname "$APP_PATH")
-          # Create README for users
-          cat > README.txt << 'EOF'
-VCOTuner - VCO Calibration Tool
+          cat > README.txt << 'READMEEOF'
+        VCOTuner - VCO Calibration Tool
 
-INSTALLATION:
-1. Unzip this archive
-2. Drag VCOTuner.app to your Applications folder
+        INSTALLATION
+        1. Unzip this archive
+        2. Drag VCOTuner.app to your Applications folder
 
-FIRST RUN - macOS Sequoia 15.x / Sonoma 14.x:
-Since this app is not notarized by Apple, macOS will block it.
+        FIRST RUN - macOS Sequoia 15.x / Sonoma 14.x
+        Since this app is not notarized by Apple, macOS will block it.
 
-METHOD 1 (Recommended):
-1. Open Terminal (Applications > Utilities > Terminal)
-2. Run: xattr -cr /Applications/VCOTuner.app
-3. Double-click VCOTuner.app to run
+        METHOD 1 (Recommended)
+        1. Open Terminal (Applications > Utilities > Terminal)
+        2. Run this command: xattr -cr /Applications/VCOTuner.app
+        3. Double-click VCOTuner.app to run
 
-METHOD 2 (Right-click):
-1. Right-click (or Control-click) on VCOTuner.app
-2. Select "Open" from the context menu
-3. Click "Open" in the security dialog
-4. If blocked, go to System Settings > Privacy & Security
-5. Scroll down and click "Open Anyway"
+        METHOD 2 (Right-click)
+        1. Right-click (or Control-click) on VCOTuner.app
+        2. Select Open from the context menu
+        3. Click Open in the security dialog
+        4. If blocked, go to System Settings then Privacy and Security
+        5. Scroll down and click Open Anyway
 
-MICROPHONE ACCESS:
-The app needs microphone access to detect pitch.
-Grant permission when prompted by macOS.
+        MICROPHONE ACCESS
+        The app needs microphone access to detect pitch.
+        Grant permission when prompted by macOS.
 
-For more info: https://github.com/Ziforge/VCOTuner
-EOF
+        More info at https://github.com/Ziforge/VCOTuner
+        READMEEOF
           zip -r VCOTuner-macOS.zip VCOTuner.app README.txt
           mv VCOTuner-macOS.zip ../..
         fi
@@ -103,18 +102,19 @@ EOF
         $exe = Get-ChildItem -Recurse -Path build -Filter "VCOTuner.exe" | Select-Object -First 1
         if ($exe) {
           $dir = Split-Path $exe.FullName
-          @"
+          $readme = @"
         VCOTuner - VCO Calibration Tool
 
-        INSTALLATION:
+        INSTALLATION
         1. Extract VCOTuner.exe to a folder of your choice
         2. Double-click VCOTuner.exe to run
 
         Windows may show a SmartScreen warning since the app is not signed.
-        Click "More info" then "Run anyway" to proceed.
+        Click More info then Run anyway to proceed.
 
-        For more info: https://github.com/Ziforge/VCOTuner
-        "@ | Out-File -FilePath "$dir\README.txt" -Encoding UTF8
+        More info at https://github.com/Ziforge/VCOTuner
+        "@
+          $readme | Out-File -FilePath "$dir\README.txt" -Encoding UTF8
           Compress-Archive -Path "$dir\VCOTuner.exe","$dir\README.txt" -DestinationPath "build\VCOTuner-Windows.zip"
         }
       shell: pwsh
@@ -154,19 +154,19 @@ EOF
         if [ -n "$EXE_PATH" ]; then
           mkdir -p dist
           cp "$EXE_PATH" dist/
-          cat > dist/README.txt << 'EOF'
+          cat > dist/README.txt << 'READMEEOF'
         VCOTuner - VCO Calibration Tool
 
-        INSTALLATION:
+        INSTALLATION
         1. Extract the archive
-        2. Make the binary executable: chmod +x VCOTuner
-        3. Run: ./VCOTuner
+        2. Make the binary executable with chmod +x VCOTuner
+        3. Run with ./VCOTuner
 
-        DEPENDENCIES:
-        You may need to install: libasound2, libfreetype6, libx11-6
+        DEPENDENCIES
+        You may need to install libasound2, libfreetype6, libx11-6
 
-        For more info: https://github.com/Ziforge/VCOTuner
-        EOF
+        More info at https://github.com/Ziforge/VCOTuner
+        READMEEOF
           tar -czvf build/VCOTuner-Linux.tar.gz -C dist .
         fi
 
