@@ -43,6 +43,9 @@ void Visualizer::paint(juce::Graphics &g, int width, int height)
     double min = 0;
     for (int i = 0; i < measurements.size(); i++)
     {
+        if (failedPitches.contains (measurements[i].midiPitch))
+            continue;
+
         double value = measurements[i].pitchOffset;
         double deviation = measurements[i].pitchDeviation;
         if (value - deviation < min)
@@ -166,6 +169,57 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
         float left = sidebarWidth + i * (float)columnWidth;
         float barCenter = left + (float)columnWidth / 2.0f;
         float barWidth = jmax(2.0f, (float)columnWidth * 0.7f);
+        const float chartBottom = chartTop + (float)imageHeight;
+
+        if (failedPitches.contains (measurements[i].midiPitch))
+        {
+            // no usable measurement for this note: a point/band at offset
+            // zero would misleadingly look "in tune", so mark the whole
+            // column instead with a shape that doesn't depend on hue.
+            g.setColour (ModernLookAndFeel::Colors::warning.withAlpha (0.15f));
+            g.fillRect (left, chartTop, (float) columnWidth, (float) imageHeight);
+
+            g.setColour (ModernLookAndFeel::Colors::warning);
+            const float margin = (float) columnWidth * 0.25f;
+            const float crossTop = chartTop + (float) imageHeight * 0.25f;
+            const float crossBottom = chartTop + (float) imageHeight * 0.75f;
+            g.drawLine (left + margin, crossTop, left + (float) columnWidth - margin, crossBottom, 2.0f);
+            g.drawLine (left + margin, crossBottom, left + (float) columnWidth - margin, crossTop, 2.0f);
+            continue;
+        }
+
+        // A reading whose centre falls outside the plotted range would draw
+        // nothing at all, and a blank column reads as "this note was never
+        // measured" rather than "this note is worse than the range shows".
+        // That matters most in the report, which plots a fixed +/-15 cents
+        // (see ReportDisplayScreen), so a badly tracking oscillator goes
+        // blank at exactly the notes worth looking at. Mark the edge it ran
+        // off instead. The direction carries the meaning, so it still reads
+        // without relying on colour.
+        const double offset = measurements[i].pitchOffset;
+
+        if (offset > max || offset < min)
+        {
+            const float margin = (float) columnWidth * 0.25f;
+            const float span   = (float) columnWidth - 2.0f * margin;
+            const float depth  = jmin (span, (float) imageHeight * 0.12f);
+            const float centre = left + margin + span / 2.0f;
+
+            Path arrow;
+
+            if (offset > max)
+                arrow.addTriangle (left + margin, chartTop + depth,
+                                   left + margin + span, chartTop + depth,
+                                   centre, chartTop);
+            else
+                arrow.addTriangle (left + margin, chartBottom - depth,
+                                   left + margin + span, chartBottom - depth,
+                                   centre, chartBottom);
+
+            g.setColour (ModernLookAndFeel::Colors::meterBad);
+            g.fillPath (arrow);
+            continue;
+        }
 
         // draw deviation range
         float maxPosition = (float)((measurements[i].pitchOffset + measurements[i].pitchDeviation - min) * vertScaling) ;
@@ -211,7 +265,7 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
     const int numPitchTextIntervals = 5;
     const int pitchTextIntervals[numPitchTextIntervals] = {1, 2, 5, 10, 20};
     int currentPitchTextIntervalIndex = 0;
-    while (g.getCurrentFont().getStringWidth("123.") > pitchTextIntervals[currentPitchTextIntervalIndex] * columnWidth)
+    while (GlyphArrangement::getStringWidth(g.getCurrentFont(), "123.") > pitchTextIntervals[currentPitchTextIntervalIndex] * columnWidth)
     {
         currentPitchTextIntervalIndex++;
         if (currentPitchTextIntervalIndex >= numPitchTextIntervals)
@@ -237,7 +291,7 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
     {
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
         g.setFont(Font(11.0f));
-        float textWidth = g.getCurrentFont().getStringWidth(String(measurements[i].midiPitch));
+        float textWidth = GlyphArrangement::getStringWidth(g.getCurrentFont(), String(measurements[i].midiPitch));
         float xLeft = sidebarWidth + i * float(columnWidth);
         float x = xLeft + float(columnWidth) / 2.0f - textWidth / 2.0f;
         float yPos = height - bottomBarHeight + 8;
@@ -252,6 +306,14 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
         {
             g.setColour(ModernLookAndFeel::Colors::accentAlt.withAlpha(0.05f));
             g.fillRect(Rectangle<float>(xLeft, chartTop, float(columnWidth), (float)imageHeight));
+        }
+        if (pitchTextInterval == 1 && columnWidth < GlyphArrangement::getStringWidth(g.getCurrentFont(), "123."))
+        {
+            if (i % 2 == 0)
+            {
+                g.setColour(ModernLookAndFeel::Colors::accentAlt.withAlpha(0.05f));
+                g.fillRect(Rectangle<float>(xLeft, chartTop, float(columnWidth), (float)imageHeight));
+            }
         }
     }
 
@@ -381,21 +443,42 @@ float Visualizer::yFlip(float y)
     return heightForFlipping - y;
 }
 
-void Visualizer::newMeasurementReady(const VCOTuner::measurement_t& m)
+void Visualizer::upsertMeasurement (const VCOTuner::measurement_t& m)
 {
-    bool found = false;
     for (int i = 0; i < measurements.size(); i++)
     {
         if (measurements[i].midiPitch == m.midiPitch)
         {
-            measurements.set(i, m);
-            found = true;
-            repaint();
+            measurements.set (i, m);
+            return;
         }
     }
 
-    if (!found)
-        measurements.add(m);
+    measurements.add (m);
+}
+
+void Visualizer::newMeasurementReady(const VCOTuner::measurement_t& m)
+{
+    // a later cycle may have re-measured a note that previously failed;
+    // a fresh successful reading means it is no longer failed.
+    failedPitches.removeFirstMatchingValue (m.midiPitch);
+
+    upsertMeasurement (m);
+
+    repaint();
+}
+
+void Visualizer::measurementFailed (int midiPitch, vcotuner::MeasurementError)
+{
+    failedPitches.addIfNotAlreadyThere (midiPitch);
+
+    // give the pitch a column even if it has never produced a measurement,
+    // so a first-attempt failure is visible instead of just closing the gap.
+    // All numeric fields stay at zero; numMeasurements == 0 marks this as a
+    // placeholder. A later successful reading overwrites it via upsertMeasurement.
+    VCOTuner::measurement_t placeholder {};
+    placeholder.midiPitch = midiPitch;
+    upsertMeasurement (placeholder);
 
     repaint();
 }

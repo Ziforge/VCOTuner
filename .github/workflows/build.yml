@@ -16,7 +16,7 @@ jobs:
         submodules: recursive
 
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
     - name: Build
       run: cmake --build build --config Release
@@ -88,7 +88,7 @@ jobs:
         submodules: recursive
 
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -A x64 -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
       run: cmake --build build --config Release
@@ -177,3 +177,67 @@ jobs:
         path: build/VCOTuner-Linux.tar.gz
         if-no-files-found: warn
         retention-days: 90
+
+  # builds and runs the measurement unit tests
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    # The tests themselves link no JUCE, but configuring the project still
+    # pulls in JUCE and bootstraps juceaide, which needs JUCE's build deps.
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++ libfreetype6-dev libfontconfig1-dev libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev mesa-common-dev libasound2-dev freeglut3-dev libxcomposite-dev libcurl4-openssl-dev libwebkit2gtk-4.1-dev
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DVCOTUNER_BUILD_TESTS=ON
+
+    - name: Build tests
+      run: cmake --build build --target VCOTunerTests
+
+    - name: Run tests
+      run: ctest --test-dir build --output-on-failure
+
+  # publishes a release when a v* tag is pushed. Does nothing on ordinary pushes.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos, build-windows, build-linux, unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      # GITHUB_TOKEN is read-only by default; creating a release needs write.
+      contents: write
+    steps:
+    - name: Download every build artifact
+      uses: actions/download-artifact@v4
+
+    - name: Publish the release
+      uses: softprops/action-gh-release@v2
+      with:
+        generate_release_notes: true
+        body: |
+          ## Before you download
+
+          **Only the macOS build has been tested on real hardware.** The Windows
+          and Linux binaries are produced by CI and have never been run against
+          an actual oscillator. They compile; that is all that is known about
+          them. Treat them as untested.
+
+          **macOS builds are not signed by Apple.** They are ad-hoc signed with
+          the entitlements the app needs, but Gatekeeper will still refuse to
+          open them and claim the app is damaged. It isn't. Either right-click
+          the app and choose Open, or clear the quarantine flag:
+
+          ```
+          xattr -cr VCOTuner.app
+          ```
+
+          Signing properly needs a paid Apple Developer ID, which this project
+          does not have.
+        files: |
+          VCOTuner-macOS/VCOTuner-macOS.zip
+          VCOTuner-Windows/VCOTuner-Windows.zip
+          VCOTuner-Linux/VCOTuner-Linux.tar.gz

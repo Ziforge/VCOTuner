@@ -1,0 +1,82 @@
+// Source/dsp/PeriodDetector.h
+#pragma once
+
+#include <vector>
+
+namespace vcotuner
+{
+
+struct PeriodDetectorConfig
+{
+    double sampleRate         = 48000.0;
+    double hysteresisFraction = 0.1;    // of measured amplitude
+    int    stabilityWindow    = 5;      // consecutive periods compared
+    double stabilityTolerance = 0.1;    // 10% spread allowed
+    int    maxPeriods         = 600;    // storage limit
+    int    warmupSamples      = 2048;   // level-tracking window
+    double silenceFloor       = 1e-4;   // amplitude below this => silent
+    int    requiredPeriods    = 10;     // valid periods needed for 'stable'
+};
+
+enum class DetectorStatus
+{
+    collecting,         // still gathering
+    stable,             // enough valid periods collected
+    failedUnstable,     // never reached a steady rate
+    failedNoCrossings,  // silent, or no crossings at all
+    failedBufferFull    // ran out of storage before stabilising
+};
+
+class PeriodDetector
+{
+public:
+    /** Allocates period storage up front.
+
+        reset() is called from the real-time audio thread, where a heap
+        allocation can cause dropouts. Call this once from a non-realtime
+        thread with the largest maxPeriods any later config will use: the
+        reserve inside reset() then asks for a capacity the buffer already
+        has, which the standard requires to be a no-op.
+    */
+    void prepare (int maxPeriods);
+
+    void reset (const PeriodDetectorConfig& config);
+    void processBlock (const float* samples, int numSamples);
+
+    DetectorStatus status() const noexcept { return currentStatus; }
+
+    double midpoint()  const noexcept { return levelMidpoint; }
+    double amplitude() const noexcept { return levelAmplitude; }
+
+    int numPeriods() const noexcept { return (int) periods.size(); }
+    const double* periodData() const noexcept { return periods.data(); }
+
+    int numValidPeriods() const noexcept;
+    const double* validPeriods() const noexcept;
+
+private:
+    void finishWarmup();
+    void processCrossing (double s);
+    void recordCrossing (double position);
+    void updateStability();
+
+    PeriodDetectorConfig cfg {};
+    DetectorStatus currentStatus = DetectorStatus::collecting;
+
+    long long sampleCounter  = 0;
+    int       warmupRemaining = 0;
+    double    runningMin     = 0.0;
+    double    runningMax     = 0.0;
+    double    levelMidpoint  = 0.0;
+    double    levelAmplitude = 0.0;
+    bool      haveLevel      = false;
+
+    std::vector<double> periods;
+    double lastCrossing   = -1.0;
+    double lastSample     =  0.0;
+    bool   armed          = false;
+    bool   haveLastSample = false;
+    int    firstValidIndex = -1;
+};
+
+} // namespace vcotuner
