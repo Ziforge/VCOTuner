@@ -13,6 +13,14 @@
 
 #include "../JuceLibraryCode/JuceHeader.h"
 
+#include "dsp/MeasurementError.h"
+#include "dsp/MeasurementStatistics.h"
+#include "dsp/ClockCalibrator.h"
+#include "dsp/PeriodDetector.h"
+
+#include <atomic>
+#include <vector>
+
 class CVOutputManager;
 
 class VCOTuner: public ChangeListener,
@@ -21,7 +29,7 @@ class VCOTuner: public ChangeListener,
 {
 public:
     VCOTuner(AudioDeviceManager* deviceManager);
-    ~VCOTuner();
+    ~VCOTuner() override;
     
     void toggleState();
     void start();
@@ -61,27 +69,42 @@ public:
         double freqDeviation;
         double pitchDeviation;
         int numMeasurements;
+        // Crossings the fit had to discard for this note -- a dropout, or a
+        // trigger that fired on something that was not a cycle boundary. The
+        // reading is still correct; this says it needed repairing to get there.
+        int rejectedCrossings;
         Time timestamp;
     } measurement_t;
     
     /** returns all error messages and removes them from the internal list */
     StringArray getLastErrors();
     
-    /** inherited from AudioIODeviceCallback */
-    virtual void audioDeviceIOCallback (const float** inputChannelData,
-                                        int numInputChannels,
-                                        float** outputChannelData,
-                                        int numOutputChannels,
-                                        int numSamples);
+    /** the notes that failed to measure during the current sweep */
+    const std::vector<vcotuner::NoteFailure>& getFailures() const
+        { return failureTracker.failures(); }
+    
+    /** inherited from AudioIODeviceCallback.
+
+        Marked `override` deliberately. JUCE 8 removed the older
+        audioDeviceIOCallback(), and a near-miss signature without `override`
+        still compiles - it just silently becomes a function JUCE never calls,
+        leaving the tuner unable to hear anything. `override` turns that
+        mistake into a compile error. */
+    void audioDeviceIOCallbackWithContext (const float* const* inputChannelData,
+                                           int numInputChannels,
+                                           float* const* outputChannelData,
+                                           int numOutputChannels,
+                                           int numSamples,
+                                           const AudioIODeviceCallbackContext& context) override;
     
     /** inherited from AudioIODeviceCallback */
-    virtual void audioDeviceAboutToStart (AudioIODevice* device);
+    virtual void audioDeviceAboutToStart (AudioIODevice* device) override;
     
     /** inherited from AudioIODeviceCallback */
-    virtual void audioDeviceStopped();
+    virtual void audioDeviceStopped() override;
     
     /** inherited from ChangeListener */
-    virtual void changeListenerCallback (ChangeBroadcaster* source);
+    virtual void changeListenerCallback (ChangeBroadcaster* source) override;
     
     class Listener
     {
@@ -89,6 +112,11 @@ public:
         virtual ~Listener() {}
         
         virtual void newMeasurementReady(const measurement_t& /*m*/) {}
+
+        /** a single note could not be measured. The sweep carries on without it. */
+        virtual void measurementFailed (int /*midiPitch*/,
+                                        vcotuner::MeasurementError /*reason*/) {}
+
         virtual void tunerStarted() {}
         virtual void tunerStopped() {}
         virtual void tunerFinished() {}
@@ -99,11 +127,66 @@ public:
     void removeListener(Listener* l);
 
     // CV Output integration
+    /** The converter's measured rate where one is available, the rate the
+        device reports otherwise. Every conversion from a period in samples to
+        a frequency in Hz goes through this rather than the nominal rate: a
+        converter out by 100 ppm puts every absolute reading out by 0.17
+        cents, and that error is systematic, so a longer measurement does not
+        reduce it. See ClockCalibrator.
+    */
+    double effectiveSampleRate() const noexcept
+    {
+        const double measured = measuredSampleRate.load (std::memory_order_relaxed);
+        return (measured > 0.0) ? measured : sampleRate;
+    }
+
+    /** Offset of the measured rate from nominal in ppm, or 0 when no estimate
+        is available. For display: a reading is worth qualifying if the clock
+        it came from had to be corrected.
+    */
+    double clockOffsetPpm() const noexcept
+    {
+        return clockPpm.load (std::memory_order_relaxed);
+    }
+
+    /** Where the pitch the oscillator is asked to play comes from.
+
+        midiOut sends MIDI notes for an external MIDI-to-CV interface to turn
+        into a voltage. cvOutput skips that interface and drives the
+        oscillator straight from a DC-coupled audio output, which takes a
+        second converter -- with its own scaling error -- out of the
+        measurement chain, and closes the loop: the same app sets the voltage
+        and measures what came back.
+    */
+    enum class PitchSource { midiOut, cvOutput };
+
+    void setPitchSource (PitchSource source);
+    PitchSource getPitchSource() const noexcept { return pitchSource; }
+
+    /** True when cvOutput is selected but nothing can carry it -- no manager,
+        or an audio device opened with no output channels. Checked before a
+        run rather than letting the sweep fail note by note.
+    */
+    bool cvOutputUnavailable() const noexcept;
+
     void setCVOutputManager(CVOutputManager* manager) { cvOutputManager = manager; }
     CVOutputManager* getCVOutputManager() { return cvOutputManager; }
 
 private:
     CVOutputManager* cvOutputManager = nullptr;
+    PitchSource pitchSource = PitchSource::midiOut;
+
+    // Recorded by the audio callback so the pre-run check can tell whether a
+    // CV-driven sweep has anywhere to send its voltage.
+    std::atomic<int> availableOutputChannels { 0 };
+
+    // Written on the audio thread, read on the message thread. The calibrator's
+    // running sums stay private to the audio thread and only the finished
+    // estimate is published, so the reader never sees them mid-update.
+    vcotuner::ClockCalibrator clockCalibrator;
+    std::atomic<double> measuredSampleRate { 0.0 };   // 0 == no estimate yet
+    std::atomic<double> clockPpm { 0.0 };
+    int clockPublishCounter = 0;
     // states for the state machine
     enum State
     {
@@ -122,22 +205,44 @@ private:
     ListenerList<Listener> listeners;
     
     // processes the state machine
-    virtual void timerCallback();
+    virtual void timerCallback() override;
     void switchState(State newState);
-    void trySendMidiNoteOn(int pitch);
-    void trySendMidiNoteOff(int pitch);
+    // Named for what they do, not for how: with cvOutput selected these set a
+    // voltage and no MIDI is sent at all.
+    void playPitch(int pitch);
+    void releasePitch(int pitch);
+    /** hands the detector to the audio thread for a measurement at this pitch */
+    void startDetectorRun(int pitch);
+    /** records the failure, tells the listeners and moves on to the next note */
+    void failCurrentNote(vcotuner::MeasurementError reason);
+    /** Bounded wait for the audio thread to consume a pending stop request.
+
+        Every prep state must let a pending stop request drain before starting
+        a new run, otherwise the low level state machine consumes the stale
+        request and kills the run it was meant to start. Only the audio
+        callback clears that flag, so with no device running nothing ever
+        would: after one second this reports the failure and stops the tuner
+        instead of waiting forever.
+
+        @returns true while the caller must not proceed (either still waiting,
+                 or the tuner has just been stopped); false when the flag is
+                 clear and the state may carry on.
+    */
+    bool awaitingStopRequest();
+    /** the user facing message for a detector status that is not 'stable' */
+    const String& errorMessageForStatus(vcotuner::DetectorStatus status) const;
     int currentlyPlayingMidiNote;
     
     // counts cycles since the last state transition
     int cycleCounter;
 
-    
-    /** error message from the audio thread */
-    enum LowLevelError
-    {
-        noError = 0,
-        notStable // frequency not stable (= too much jitter)
-    };
+    /** counts consecutive cycles a prep state has spent waiting for a pending
+        stop request to be consumed. Kept separate from cycleCounter, which
+        gates the MIDI note-on (cycleCounter == 0) and the 100 ms oscillator
+        settling window: advancing that one while waiting would skip the
+        note-on entirely and shorten the settling time. */
+    int stopWaitCounter = 0;
+
     
     /** lowest pitch to be measured */
     int lowestPitch;
@@ -150,9 +255,9 @@ private:
     int currentIndex;
     
     /** midi note for which the reference measurement was done. */
-    int referencePitch;
-    /** frequency returned during the reference measurement */
-    float referenceFrequency;
+    int referencePitch = 0;
+    /** frequency returned during the reference measurement, 0 until measured */
+    float referenceFrequency = 0.0f;
     
     /** a list with recent error messages */
     StringArray errors;
@@ -164,28 +269,35 @@ private:
     State state;
     
     
-    /** the following must only be accessed from the message thread, when startMeasurement == false and
-     be accessed from the audio thread, when startMeasurement == true */
-    bool startMeasurement; // set by message thread, reset by audio thread.
-    bool stopMeasurement;  // set by message thread, reset by audio thread.
-    static const int maxNumPeriodLengths = 600;
-    double periodLengths[maxNumPeriodLengths]; // all measured period lengths of this measurement
+    /** The detector is owned by the audio thread while startMeasurement is true.
+        The message thread may read it only after it has observed startMeasurement
+        == false, which the audio thread publishes after its last write. */
+    vcotuner::PeriodDetector detector;
+    std::atomic<bool> startMeasurement { false }; // set by message thread, reset by audio thread.
+    std::atomic<bool> stopMeasurement  { false }; // set by message thread, reset by audio thread.
+    /** the detector's status, published by the audio thread after every block */
+    std::atomic<int>  detectorStatusFlag { (int) vcotuner::DetectorStatus::collecting };
+
+    vcotuner::DetectorStatus lastDetectorStatus() const noexcept
+        { return (vcotuner::DetectorStatus) detectorStatusFlag.load(); }
+
     int numPeriodSamples; // number of periods to measure before averaging
-    int indexOfFirstValidPeriodLength; // the index in periodLengths[] at which the system has reached a stable frequency
-                                       // this is also the first valid period length measurement that is included in the result
-    int periodLengthsHead;
-    LowLevelError lError; // holds error message from the audio thread
-    
-    /** the following are only to be accessed from the audio thread */
-    int sampleCounter; // counts samples since the start of a measurement
-    double lastZeroCrossing; // holds the sample counters value of the last zero corssing (- => +)
-    float lastSample;
-    double sampleRate;
-    bool initialized;
+    /** length of the detector's level tracking window, sized per note */
+    int currentWarmupSamples = 2048;
+
+    /** the notes that failed during the current sweep */
+    vcotuner::FailureTracker failureTracker;
+
+    /** written in audioDeviceAboutToStart, before any measurement can run */
+    double sampleRate = 44100.0;
+    /** only to be accessed from the audio thread */
+    bool initialized = false;
     
     int continuousFrequencyMeasurementPitch;
-    double continuousFreqMeasurementResult;
-    double continuousFreqMeasurementDeviation;
+    /** -1 until a pass has settled: ReportPrepScreen polls this and advances
+        the report wizard on it, so it must never hold an undefined value. */
+    double continuousFreqMeasurementResult = -1.0;
+    double continuousFreqMeasurementDeviation = 0.0;
     
     int singleMeasurementPitch;
     double singleMeasurementResult;
@@ -195,13 +307,26 @@ private:
     {
         static const String highJitter;
         static const String noZeroCrossings;
-        static const String highJitterTimeOut;
+        static const String bufferFull;
         static const String stableTimeout;
         static const String noFrequencyChangeBetweenMeasurements;
+        static const String cvOutputUnavailable;
         static const String noMidiDeviceAvailable;
         static const String audioDeviceStoppedDuringMeasurement;
     };
 };
+
+/** Short, user-facing description of a per-note measurement failure, for the
+    end-of-report summary dialog. Lives here rather than in Source/dsp/
+    because it returns a JUCE String. */
+String describeError (vcotuner::MeasurementError error);
+
+/** Shows the end-of-report summary dialog (one NativeMessageBox naming every
+    failed note) when failures is non-empty; does nothing otherwise. Shared
+    by every path that finishes a report, so the wording only lives in one
+    place. Currently called from ReportDetailsEditorScreen, at the point
+    where the report's measurement is actually complete. */
+void showMeasurementFailureSummary (const std::vector<vcotuner::NoteFailure>& failures);
 
 
 #endif  // VCOTUNER_H_INCLUDED

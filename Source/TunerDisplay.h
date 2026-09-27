@@ -37,7 +37,6 @@ private:
     void drawSmallDataBox(Graphics& g, Rectangle<float> bounds, const String& label, const String& value);
     void drawPrecisionMeter(Graphics& g, Rectangle<float> bounds);
 
-    VCOTuner* tuner;
 
     // Current state
     int currentMidiNote = 60;

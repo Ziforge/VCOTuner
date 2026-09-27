@@ -48,10 +48,10 @@ public:
     public:
         virtual ~Listener() = default;
         virtual void calibrationStarted() {}
-        virtual void calibrationPointCompleted(const CalibrationPoint& point) {}
-        virtual void calibrationProgress(float percent, const String& status) {}
-        virtual void calibrationCompleted(const CalibrationTable& table) {}
-        virtual void calibrationError(const String& error) {}
+        virtual void calibrationPointCompleted(const CalibrationPoint& /*point*/) {}
+        virtual void calibrationProgress(float /*percent*/, const String& /*status*/) {}
+        virtual void calibrationCompleted(const CalibrationTable& /*table*/) {}
+        virtual void calibrationError(const String& /*error*/) {}
         virtual void calibrationCancelled() {}
     };
 
@@ -90,7 +90,7 @@ public:
     void tunerStarted() override {}
     void tunerStopped() override;
     void tunerFinished() override {}
-    void tunerStatusChanged(String statusString) override {}
+    void tunerStatusChanged(String /*statusString*/) override {}
 
 private:
     enum class State

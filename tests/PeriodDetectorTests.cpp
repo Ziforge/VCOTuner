@@ -1,0 +1,602 @@
+// tests/PeriodDetectorTests.cpp
+#include <catch2/catch_test_macros.hpp>
+#include "dsp/PeriodDetector.h"
+#include "dsp/MeasurementStatistics.h"
+
+using namespace vcotuner;
+
+TEST_CASE ("a freshly reset detector is collecting")
+{
+    PeriodDetector detector;
+    detector.reset (PeriodDetectorConfig {});
+    REQUIRE (detector.status() == DetectorStatus::collecting);
+}
+
+#include <catch2/catch_approx.hpp>
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+using Catch::Approx;
+
+namespace
+{
+    constexpr double kPi = 3.14159265358979323846;
+
+    // Generates a sine with a given DC offset and amplitude.
+    std::vector<float> makeSine (double freq, double sampleRate, int numSamples,
+                                 double amplitude = 1.0, double dc = 0.0)
+    {
+        std::vector<float> out ((size_t) numSamples);
+        for (int i = 0; i < numSamples; ++i)
+            out[(size_t) i] = (float) (dc + amplitude
+                                * std::sin (2.0 * kPi * freq * i / sampleRate));
+        return out;
+    }
+}
+
+TEST_CASE ("level tracking finds the midpoint of a DC-offset signal")
+{
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples = 4800;              // 100 ms at 48 kHz
+    const auto samples = makeSine (220.0, 48000.0, 4800, 0.8, 0.3);
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), (int) samples.size());
+
+    REQUIRE (detector.midpoint()  == Approx (0.3).margin (0.01));
+    REQUIRE (detector.amplitude() == Approx (0.8).margin (0.01));
+}
+
+TEST_CASE ("level tracking is unaffected by block chunking")
+{
+    // Same DC-offset sine as "level tracking finds the midpoint of a
+    // DC-offset signal", but fed through processBlock in small chunks —
+    // the way the real-time audio callback delivers 256-512 sample
+    // buffers, never one block spanning the whole warm-up window.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples = 4800;              // 100 ms at 48 kHz
+    const auto samples = makeSine (220.0, 48000.0, 4800, 0.8, 0.3);
+
+    PeriodDetector singleBlock;
+    singleBlock.reset (cfg);
+    singleBlock.processBlock (samples.data(), (int) samples.size());
+
+    PeriodDetector chunked;
+    chunked.reset (cfg);
+    const int chunkSize = 64;
+    for (int offset = 0; offset < (int) samples.size(); offset += chunkSize)
+    {
+        const int n = std::min (chunkSize, (int) samples.size() - offset);
+        chunked.processBlock (samples.data() + offset, n);
+    }
+
+    REQUIRE (chunked.midpoint()  == singleBlock.midpoint());
+    REQUIRE (chunked.amplitude() == singleBlock.amplitude());
+}
+
+TEST_CASE ("level tracking handles an asymmetric waveform")
+{
+    // Ramp from -0.2 to +1.0: midpoint 0.4, amplitude 0.6.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples = 1200;
+    std::vector<float> samples (1200);
+    for (int i = 0; i < 1200; ++i)
+        samples[(size_t) i] = (float) (-0.2 + 1.2 * ((i % 100) / 100.0));
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), (int) samples.size());
+
+    REQUIRE (detector.midpoint()  == Approx (0.4).margin (0.02));
+    REQUIRE (detector.amplitude() == Approx (0.6).margin (0.02));
+}
+
+TEST_CASE ("silence is reported as failedNoCrossings, not a divide by zero")
+{
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples = 480;
+    std::vector<float> silence (480, 0.0f);
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (silence.data(), (int) silence.size());
+
+    REQUIRE (detector.status() == DetectorStatus::failedNoCrossings);
+    REQUIRE (std::isfinite (detector.midpoint()));
+    REQUIRE (std::isfinite (detector.amplitude()));
+}
+
+#include <random>
+
+namespace
+{
+    // M_PI is not standard C++ (needs _USE_MATH_DEFINES on MSVC); reuse the
+    // kPi constant declared above instead.
+    std::vector<float> makeNoisySine (double freq, double sampleRate, int numSamples,
+                                      double noise, double dc, unsigned seed = 7)
+    {
+        std::mt19937 rng (seed);
+        std::uniform_real_distribution<double> dist (-noise, noise);
+        std::vector<float> out ((size_t) numSamples);
+        for (int i = 0; i < numSamples; ++i)
+            out[(size_t) i] = (float) (dc + std::sin (2.0 * kPi * freq * i / sampleRate)
+                                          + dist (rng));
+        return out;
+    }
+}
+
+TEST_CASE ("hysteresis rejects noise-induced false crossings")
+{
+    // 1 second of 220 Hz => 220 periods. Warm-up consumes roughly the first
+    // 2 cycles, so allow a small shortfall rather than demanding exactly 219.
+    const int numSamples = 48000;
+
+    struct Case { double noise; double dc; };
+    const Case cases[] = { {0.02, 0.0}, {0.05, 0.0}, {0.02, 0.9}, {0.05, 0.9} };
+
+    for (const auto& c : cases)
+    {
+        PeriodDetectorConfig cfg;
+        cfg.warmupSamples  = 480;
+        cfg.maxPeriods     = 2000;
+        cfg.requiredPeriods = 100000;   // never declare 'stable'; just count
+        const auto samples = makeNoisySine (220.0, 48000.0, numSamples, c.noise, c.dc);
+
+        PeriodDetector detector;
+        detector.reset (cfg);
+        detector.processBlock (samples.data(), numSamples);
+
+        INFO ("noise=" << c.noise << " dc=" << c.dc);
+        // The old hard-threshold detector produced up to 609 here.
+        REQUIRE (detector.numPeriods() >= 215);
+        REQUIRE (detector.numPeriods() <= 221);
+    }
+}
+
+TEST_CASE ("trigger level adapts to very quiet and very hot signals")
+{
+    // The absolute count follows from the fixture: 48000 samples at 440 Hz
+    // is 440 cycles, warm-up consumes 480 samples (4.4 cycles), the trigger
+    // needs up to another half cycle to arm, and the first crossing is
+    // discarded for having no predecessor. That lands on 434. What matters
+    // is that the count does not move with amplitude.
+    std::vector<int> counts;
+
+    for (double amp : { 0.01, 0.5, 4.0 })
+    {
+        PeriodDetectorConfig cfg;
+        cfg.warmupSamples   = 480;
+        cfg.maxPeriods      = 2000;
+        cfg.requiredPeriods = 100000;
+        const auto samples = makeSine (440.0, 48000.0, 48000, amp, 0.0);
+
+        PeriodDetector detector;
+        detector.reset (cfg);
+        detector.processBlock (samples.data(), 48000);
+        counts.push_back (detector.numPeriods());
+    }
+
+    INFO ("counts: " << counts[0] << ", " << counts[1] << ", " << counts[2]);
+    // A threshold fixed in absolute terms rather than scaled to the measured
+    // amplitude would miss every crossing at 0.01 and still fire at 4.0.
+    REQUIRE (counts[0] == counts[1]);
+    REQUIRE (counts[1] == counts[2]);
+    REQUIRE (counts[0] >= 430);
+    REQUIRE (counts[0] <= 441);
+}
+
+#include <numeric>
+
+namespace
+{
+    double periodJitter (const PeriodDetector& d)
+    {
+        const int n = d.numPeriods();
+        if (n < 2) return 1e9;
+        const double* p = d.periodData();
+        const double mean = std::accumulate (p, p + n, 0.0) / n;
+        double acc = 0.0;
+        for (int i = 0; i < n; ++i) acc += (p[i] - mean) * (p[i] - mean);
+        return std::sqrt (acc / n);
+    }
+
+    PeriodDetectorConfig countingConfig()
+    {
+        PeriodDetectorConfig cfg;
+        cfg.warmupSamples   = 480;
+        cfg.maxPeriods      = 4000;
+        cfg.requiredPeriods = 100000;
+        return cfg;
+    }
+}
+
+TEST_CASE ("interpolation makes period measurement sub-sample accurate")
+{
+    // Regression guard for the mirrored-fraction bug. The old formula
+    // produced ~0.57 samples of jitter here; no interpolation at all gives
+    // ~0.29. Neither can reach 0.05.
+    for (double freq : { 110.0, 440.0, 1318.51, 4186.01 })
+    {
+        const auto samples = makeSine (freq, 48000.0, 48000, 0.9, 0.0);
+        PeriodDetector detector;
+        detector.reset (countingConfig());
+        detector.processBlock (samples.data(), 48000);
+
+        INFO ("freq=" << freq << " jitter=" << periodJitter (detector));
+        REQUIRE (detector.numPeriods() > 50);
+        REQUIRE (periodJitter (detector) < 0.05);
+    }
+}
+
+TEST_CASE ("recovered frequency is accurate to well under a cent")
+{
+    for (double freq : { 110.0, 440.0, 1318.51, 4186.01 })
+    {
+        const auto samples = makeSine (freq, 48000.0, 48000, 0.9, 0.0);
+        PeriodDetector detector;
+        detector.reset (countingConfig());
+        detector.processBlock (samples.data(), 48000);
+
+        const int n = detector.numPeriods();
+        const double* p = detector.periodData();
+        const double meanPeriod = std::accumulate (p, p + n, 0.0) / n;
+        const double measured   = 48000.0 / meanPeriod;
+        const double cents      = 1200.0 * std::log2 (measured / freq);
+
+        INFO ("freq=" << freq << " cents error=" << cents);
+        REQUIRE (std::abs (cents) < 0.1);
+    }
+}
+
+TEST_CASE ("interpolation is accurate on a saw wave")
+{
+    const double freq = 440.0;
+    std::vector<float> samples (48000);
+    for (int i = 0; i < 48000; ++i)
+    {
+        const double phase = std::fmod (freq * i / 48000.0, 1.0);
+        samples[(size_t) i] = (float) (2.0 * phase - 1.0);
+    }
+
+    PeriodDetector detector;
+    detector.reset (countingConfig());
+    detector.processBlock (samples.data(), 48000);
+
+    REQUIRE (periodJitter (detector) < 0.05);
+}
+
+TEST_CASE ("a steady signal reaches the stable status")
+{
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.requiredPeriods = 20;
+    const auto samples = makeSine (440.0, 48000.0, 48000, 0.9, 0.0);
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), 48000);
+
+    REQUIRE (detector.status() == DetectorStatus::stable);
+    REQUIRE (detector.numValidPeriods() >= 20);
+}
+
+TEST_CASE ("a constantly changing rate never stabilises and terminates")
+{
+    // A sweep from 200 Hz to 2 kHz never holds a steady period. The detector
+    // must reach a terminal state rather than hanging - the old code left the
+    // measurement running here and stalled until the top-level timeout.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.maxPeriods      = 200;
+    cfg.requiredPeriods = 20;
+
+    std::vector<float> samples (48000);
+    double phase = 0.0;
+    for (int i = 0; i < 48000; ++i)
+    {
+        const double f = 200.0 + 1800.0 * (i / 48000.0);
+        phase += 2.0 * kPi * f / 48000.0;
+        samples[(size_t) i] = (float) std::sin (phase);
+    }
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), 48000);
+
+    REQUIRE (detector.status() == DetectorStatus::failedUnstable);
+}
+
+TEST_CASE ("a steady signal that outruns the buffer reports failedBufferFull")
+{
+    // Stabilises immediately, but the buffer cannot hold enough periods to
+    // satisfy requiredPeriods. Distinct from failedUnstable: the signal is
+    // fine, the resolution setting is simply too high for the storage.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.maxPeriods      = 20;
+    cfg.requiredPeriods = 500;
+    const auto samples = makeSine (440.0, 48000.0, 48000, 0.9, 0.0);
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), 48000);
+
+    REQUIRE (detector.status() == DetectorStatus::failedBufferFull);
+}
+
+TEST_CASE ("valid periods exclude the unstable run-in")
+{
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.requiredPeriods = 10;
+    const auto samples = makeSine (440.0, 48000.0, 48000, 0.9, 0.0);
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), 48000);
+
+    // Concrete, because the obvious relational assertions
+    // (numValidPeriods() <= numPeriods(), validPeriods() != nullptr) hold by
+    // construction and would still pass with run-in exclusion deleted.
+    // At 440 Hz / 48 kHz the detector latches after the first stabilityWindow
+    // (5) periods and stops at requiredPeriods (10) valid ones, so it holds 15
+    // periods of which the first 5 are the discarded run-in.
+    REQUIRE (detector.numPeriods() == 15);
+    REQUIRE (detector.numValidPeriods() == 10);
+    REQUIRE (detector.validPeriods() == detector.periodData() + 5);
+}
+
+TEST_CASE ("every shipped pitch and resolution reaches stable")
+{
+    // The bespoke fixtures above each pin one terminal status. This pins the
+    // arithmetic between requiredPeriods, stabilityWindow and maxPeriods
+    // across the settings a user can actually select: the pitch-range combo
+    // spans MIDI 24..96, and requiredPeriods takes 20, 100 and 400 as three
+    // representative values sampled from the shipped resolution combo's full
+    // set of {20, 50, 100, 200, 400} periods per note. maxPeriods (600) has to
+    // hold requiredPeriods plus the stabilityWindow (5) run-in that
+    // validPeriods() discards. Raising the top resolution past 595 fails here
+    // rather than in a user's sweep.
+    const double sampleRate = 48000.0;
+
+    for (int midi : { 24, 60, 96 })
+    {
+        for (int requiredPeriods : { 20, 100, 400 })
+        {
+            const double freq = 440.0 * std::pow (2.0, (midi - 69) / 12.0);
+
+            PeriodDetectorConfig cfg;
+            cfg.requiredPeriods = requiredPeriods;
+            // VCOTuner::startDetectorRun() sizes the warm-up window to two
+            // cycles of the expected frequency, clamped to [256, 48000].
+            cfg.warmupSamples = std::min (48000,
+                                          std::max (256, (int) (2.0 * sampleRate / freq)));
+
+            // Enough signal for the run-in, the required periods and a margin.
+            const int numSamples = cfg.warmupSamples
+                + (int) ((requiredPeriods + 2 * cfg.stabilityWindow + 4)
+                         * sampleRate / freq)
+                + 1000;
+            const auto samples = makeSine (freq, sampleRate, numSamples, 0.9, 0.0);
+
+            PeriodDetector detector;
+            detector.reset (cfg);
+            detector.processBlock (samples.data(), numSamples);
+
+            INFO ("midi=" << midi << " freq=" << freq
+                  << " requiredPeriods=" << requiredPeriods
+                  << " numPeriods=" << detector.numPeriods());
+            REQUIRE (detector.status() == DetectorStatus::stable);
+            REQUIRE (detector.numValidPeriods() >= requiredPeriods);
+        }
+    }
+}
+
+#include "dsp/MeasurementError.h"
+
+TEST_CASE ("one click is repaired rather than failing the note")
+{
+    // This used to be specified the other way round: any capture containing a
+    // glitch was failed, on the grounds that folding it into the fit would
+    // produce a wrong frequency carrying a plausible-looking uncertainty.
+    // That reasoning holds only for a fit that absorbs the bad crossing.
+    // fitPeriod() now numbers crossings by counting cycles, so the crossing a
+    // click inserts is identified and dropped instead of shifting the cycle
+    // number of everything after it. The frequency that comes out is the
+    // correct one, and the repair is reported rather than hidden -- so the
+    // note is now measured, and the sweep no longer loses it.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.requiredPeriods = 400;
+
+    const double freq = 440.0, sampleRate = 48000.0;
+    const int numSamples = 60000;   // ~545 periods; maxPeriods (600) is not hit
+
+    // Control: the same signal without the click is stable and clean.
+    {
+        const auto clean = makeSine (freq, sampleRate, numSamples, 0.9, 0.0);
+        PeriodDetector detector;
+        detector.reset (cfg);
+        detector.processBlock (clean.data(), numSamples);
+        REQUIRE (detector.status() == DetectorStatus::stable);
+
+        const auto fit = fitPeriod (detector.validPeriods(), detector.numValidPeriods());
+        REQUIRE (fit.valid);
+        REQUIRE (fit.rejectedCrossings == 0);
+    }
+
+    auto samples = makeSine (freq, sampleRate, numSamples, 0.9, 0.0);
+
+    // Two samples of click, halfway through the capture, on a part of the
+    // waveform that sits below the trigger midpoint - so it forces a spurious
+    // crossing rather than merely nudging an existing one.
+    int clickAt = numSamples / 2;
+    while (clickAt < numSamples - 2 && samples[(size_t) clickAt] > -0.5f)
+        ++clickAt;
+    samples[(size_t) clickAt]     = 1.5f;
+    samples[(size_t) clickAt + 1] = 1.5f;
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), numSamples);
+
+    INFO ("clickAt=" << clickAt << " numPeriods=" << detector.numPeriods()
+          << " outliers=" << detector.numOutliers());
+    REQUIRE (detector.status() == DetectorStatus::stable);
+
+    const auto result = computeMeasurement (detector.validPeriods(),
+                                            detector.numValidPeriods(),
+                                            sampleRate, freq, 69);
+    REQUIRE (result.valid);
+
+    // The whole point: the surviving measurement is right, not merely present.
+    // A tenth of a cent is far tighter than the tens of cents the unrepaired
+    // fit would have been off by.
+    REQUIRE (result.frequency == Approx (freq).epsilon (1e-4));
+    REQUIRE (std::abs (result.pitch - 69.0) < 0.001);
+
+    // And the repair is visible to the caller rather than silent.
+    REQUIRE (result.rejectedCrossings > 0);
+}
+
+TEST_CASE ("sustained jitter still fails, and is not mistaken for a glitch")
+{
+    // The allowance added for dropouts must not quietly accept a signal that
+    // is genuinely not holding a pitch. A dropout costs one or two periods out
+    // of hundreds; a wobbling oscillator puts most of them off the median, so
+    // the count lands far above the allowance and the note still fails.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.requiredPeriods = 100;
+
+    const double sampleRate = 48000.0;
+    const int numSamples = 40000;
+
+    // A sine whose frequency swings between 400 and 480 Hz every 200 samples.
+    // Integrating the frequency keeps the phase continuous, so the only thing
+    // wrong with the signal is the period length -- there are no edges or
+    // discontinuities for the trigger to catch instead.
+    std::vector<float> samples ((size_t) numSamples);
+    double phase = 0.0;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const double freq = ((i / 200) % 2 == 0) ? 400.0 : 480.0;
+        samples[(size_t) i] = (float) (0.9 * std::sin (phase));
+        phase += 2.0 * kPi * freq / sampleRate;
+    }
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), numSamples);
+
+    INFO ("status=" << (int) detector.status()
+          << " periods=" << detector.numPeriods()
+          << " outliers=" << detector.numOutliers());
+    REQUIRE (detector.status() != DetectorStatus::stable);
+}
+
+//==============================================================================
+// Following the trigger level while the signal drifts.
+
+namespace
+{
+    /** A sine sitting on a DC offset that ramps, as an oscillator's does while
+        it warms up. Returns the measured frequency, or 0 if the note failed.
+    */
+    double measureWithDrift (double trackingRate, double freq, double driftPerSecond)
+    {
+        const double sampleRate = 48000.0;
+        const int numSamples = (int) (sampleRate * 260.0 / freq);   // ~260 cycles
+
+        std::vector<float> samples ((size_t) numSamples);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const double t = i / sampleRate;
+            samples[(size_t) i] = (float) (driftPerSecond * t
+                                           + 0.8 * std::sin (2.0 * kPi * freq * t));
+        }
+
+        PeriodDetectorConfig cfg;
+        cfg.warmupSamples          = (int) (2.0 * sampleRate / freq);
+        cfg.requiredPeriods        = 200;
+        cfg.midpointTrackingRate   = trackingRate;
+
+        PeriodDetector detector;
+        detector.reset (cfg);
+        detector.processBlock (samples.data(), numSamples);
+
+        if (detector.status() != DetectorStatus::stable)
+            return 0.0;
+
+        const auto fit = fitPeriod (detector.validPeriods(), detector.numValidPeriods());
+        return fit.valid ? sampleRate / fit.periodSamples : 0.0;
+    }
+
+    double centsFrom (double measured, double truth)
+    {
+        return (measured > 0.0) ? 1200.0 * std::log2 (measured / truth) : 0.0;
+    }
+}
+
+TEST_CASE ("a drifting DC offset biases a latched trigger level")
+{
+    // The mechanism, pinned before the fix is asserted. A threshold that stays
+    // put while the waveform moves under it is crossed at a progressively
+    // different phase each cycle, so the crossing times acquire a ramp and the
+    // fitted period comes out biased -- not merely noisy.
+    const double freq = 110.0;
+    const double latched = measureWithDrift (0.0, freq, 0.2);
+
+    REQUIRE (latched > 0.0);
+    REQUIRE (std::abs (centsFrom (latched, freq)) > 0.3);
+}
+
+TEST_CASE ("following the level between cycles removes most of that bias")
+{
+    const double freq = 110.0;
+    const double latched  = measureWithDrift (0.0,  freq, 0.2);
+    const double tracking = measureWithDrift (0.05, freq, 0.2);
+
+    REQUIRE (tracking > 0.0);
+
+    const double latchedErr  = std::abs (centsFrom (latched,  freq));
+    const double trackingErr = std::abs (centsFrom (tracking, freq));
+
+    INFO ("latched " << latchedErr << "c, tracking " << trackingErr << "c");
+    REQUIRE (trackingErr < 0.1);
+    REQUIRE (trackingErr < latchedErr / 5.0);
+}
+
+TEST_CASE ("tracking costs almost nothing when there is nothing to track")
+{
+    // A level that chases noise would put that noise into the crossing times,
+    // which is why the latch existed. Following the signal is not free -- the
+    // cycle extent moves by a fraction of a sample from cycle to cycle, so the
+    // level wobbles a little and that reaches the crossing times. The bound
+    // here is what that actually costs on a clean 440 Hz sine: about 3e-5
+    // cents, four orders of magnitude below the drift bias it removes and far
+    // below anything the rest of the chain can resolve.
+    const double freq = 440.0;
+
+    const double tracked = std::abs (centsFrom (measureWithDrift (0.05, freq, 0.0), freq));
+    const double latched = std::abs (centsFrom (measureWithDrift (0.0,  freq, 0.0), freq));
+
+    INFO ("tracked " << tracked << "c, latched " << latched << "c");
+    REQUIRE (latched < 1e-6);      // a fixed level on a clean signal is exact
+    REQUIRE (tracked < 1e-3);      // and following one is close enough to it
+}
+
+TEST_CASE ("severe drift at a low pitch fails outright with a latched level")
+{
+    // Worst case, and the reason this is not only about accuracy: a low note
+    // has few cycles per second for the drift to be spread over, so the
+    // waveform walks clear of a fixed threshold and stops crossing it at all.
+    // The note is lost rather than measured badly.
+    const double freq = 50.0;
+
+    REQUIRE (measureWithDrift (0.0,  freq, 0.2) == 0.0);   // never completes
+    REQUIRE (measureWithDrift (0.05, freq, 0.2) >  0.0);   // measured
+    REQUIRE (std::abs (centsFrom (measureWithDrift (0.05, freq, 0.2), freq)) < 0.2);
+}

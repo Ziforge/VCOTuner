@@ -29,7 +29,6 @@ public:
     };
 
     CalibrationTable();
-    ~CalibrationTable();
 
     // Building the table
     void addEntry(const Entry& entry);
@@ -38,7 +37,7 @@ public:
 
     // Access
     int getEntryCount() const { return static_cast<int>(entries.size()); }
-    const Entry& getEntry(int index) const { return entries[index]; }
+    const Entry& getEntry(int index) const { return entries[(size_t) index]; }
     Entry* findEntryForNote(int midiNote);
     const Entry* findEntryForNote(int midiNote) const;
     const std::vector<Entry>& getAllEntries() const { return entries; }

@@ -77,7 +77,6 @@ private:
 };
 
 static VCOTunerApp& getApp()                      { return *dynamic_cast<VCOTunerApp*>(JUCEApplication::getInstance()); }
-ApplicationCommandManager& getCommandManager()      { return getApp().commandManager; }
 ApplicationProperties& getAppProperties()           { return *getApp().appProperties; }
 
 

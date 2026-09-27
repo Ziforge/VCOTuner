@@ -18,16 +18,16 @@ class Visualizer: public Component,
 {
 public:
     Visualizer(VCOTuner* t);
-    ~Visualizer();
+    ~Visualizer() override;
     
     void paintWithFixedScaling(Graphics& g, int width, int height, double min, double max);
     void paint(Graphics& g, int width, int height);
-    virtual void paint(Graphics& g);
+    void paint(Graphics& g) override;
     
-    virtual void newMeasurementReady(const VCOTuner::measurement_t& m);
-    
-    void clearCache() { measurements.clear(); }
+    virtual void newMeasurementReady(const VCOTuner::measurement_t& m) override;
+    void measurementFailed (int midiPitch, vcotuner::MeasurementError reason) override;
 
+    void clearCache() { measurements.clear(); failedPitches.clear(); }
 private:
     void drawTopInfoPanel(Graphics& g, int width, int panelHeight);
     void drawTunerDial(Graphics& g, Rectangle<float> bounds, float cents, int midiNote, float frequency);
@@ -35,10 +35,19 @@ private:
 
     /** holds the list of completed measurements */
     Array<VCOTuner::measurement_t> measurements;
-    
+    /** midi pitches that failed to measure during the current sweep;
+        cleared alongside measurements, and individually cleared in
+        newMeasurementReady() when a note recovers on a later cycle */
+    Array<int> failedPitches;
+
+    /** replaces the entry for m.midiPitch if one exists, otherwise appends m.
+        Shared by newMeasurementReady() and measurementFailed() so a pitch
+        never occupies more than one column. */
+    void upsertMeasurement (const VCOTuner::measurement_t& m);
+
     float heightForFlipping;
     float yFlip(float y);
-    
+
     VCOTuner* tuner;
 };
 

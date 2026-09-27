@@ -29,3 +29,7 @@
 *.app
 .DS_Store
 build
+
+# harness output
+build-*/
+.harness-*.log

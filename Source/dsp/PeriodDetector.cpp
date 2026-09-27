@@ -1,0 +1,298 @@
+// Source/dsp/PeriodDetector.cpp
+#include "PeriodDetector.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace vcotuner
+{
+
+namespace
+{
+    /** True when every one of `count` periods lies within `tolerance` (a
+        fraction of their own mean) of that mean.
+
+        Both stability checks in updateStability() ask this same question - one
+        of the newest window, one of the whole valid set - so they share the
+        definition rather than each carrying their own copy of it.
+    */
+    bool isWithinTolerance (const double* periods, int count, double tolerance)
+    {
+        if (periods == nullptr || count <= 0)
+            return false;
+
+        double sum = 0.0;
+        for (int i = 0; i < count; ++i)
+            sum += periods[i];
+
+        const double average  = sum / count;
+        const double boundary = average * tolerance;
+
+        for (int i = 0; i < count; ++i)
+            if (std::abs (periods[i] - average) >= boundary)
+                return false;
+
+        return true;
+    }
+}
+
+void PeriodDetector::prepare (int maxPeriods)
+{
+    if (maxPeriods > 0)
+    {
+        periods.reserve ((size_t) maxPeriods);
+        scratch.reserve ((size_t) maxPeriods);
+    }
+}
+
+void PeriodDetector::reset (const PeriodDetectorConfig& config)
+{
+    cfg = config;
+    currentStatus   = DetectorStatus::collecting;
+    sampleCounter   = 0;
+    warmupRemaining = config.warmupSamples;
+    runningMin      =  1e30;
+    runningMax      = -1e30;
+    levelMidpoint   = 0.0;
+    levelAmplitude  = 0.0;
+    haveLevel       = false;
+    cycleMin        =  1e30;
+    cycleMax        = -1e30;
+    haveCycleExtent = false;
+
+    periods.clear();
+    periods.reserve ((size_t) config.maxPeriods);
+    scratch.reserve ((size_t) config.maxPeriods);
+    outlierCount = 0;
+    lastCrossing    = -1.0;
+    lastSample      = 0.0;
+    armed           = false;
+    haveLastSample  = false;
+    firstValidIndex = -1;
+}
+
+void PeriodDetector::processBlock (const float* samples, int numSamples)
+{
+    if (samples == nullptr || numSamples <= 0)
+        return;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const double s = (double) samples[i];
+
+        // The trigger level is latched once, at the end of warm-up: a level
+        // that drifted mid-measurement would inject timing error into exactly
+        // the periods we are trying to measure. So min/max are only tracked
+        // while warm-up is running - finishWarmup() is their only reader, and
+        // it runs exactly once.
+        if (warmupRemaining > 0)
+        {
+            if (s < runningMin) runningMin = s;
+            if (s > runningMax) runningMax = s;
+
+            if (--warmupRemaining == 0)
+                finishWarmup();
+        }
+
+        if (haveLevel && currentStatus == DetectorStatus::collecting)
+        {
+            // Extent of the cycle in progress. Two compares per sample, and
+            // only once warm-up has produced a level to track from.
+            if (cfg.midpointTrackingRate > 0.0)
+            {
+                if (s < cycleMin) cycleMin = s;
+                if (s > cycleMax) cycleMax = s;
+                haveCycleExtent = true;
+            }
+
+            processCrossing (s);
+        }
+
+        ++sampleCounter;
+    }
+}
+
+void PeriodDetector::finishWarmup()
+{
+    levelMidpoint  = (runningMax + runningMin) * 0.5;
+    levelAmplitude = (runningMax - runningMin) * 0.5;
+
+    if (levelAmplitude < cfg.silenceFloor)
+    {
+        levelAmplitude = 0.0;
+        currentStatus  = DetectorStatus::failedNoCrossings;
+        return;
+    }
+
+    haveLevel = true;
+
+    // The warm-up window is the first cycle the tracker sees; start it from
+    // what warm-up already measured rather than from nothing.
+    cycleMin = runningMin;
+    cycleMax = runningMax;
+    haveCycleExtent = true;
+}
+
+void PeriodDetector::trackLevel() noexcept
+{
+    // Called at a crossing, so the level only ever changes between cycles:
+    // the threshold a period was measured against is the same at both ends of
+    // that period, and the trailing period is unaffected by the update.
+    if (cfg.midpointTrackingRate > 0.0 && haveCycleExtent && cycleMax > cycleMin)
+    {
+        const double cycleMid = (cycleMax + cycleMin) * 0.5;
+        const double cycleAmp = (cycleMax - cycleMin) * 0.5;
+
+        // A cycle that collapsed into the noise floor says nothing useful
+        // about where the middle of the waveform is; leave the level alone
+        // rather than dragging it towards an artefact.
+        if (cycleAmp >= cfg.silenceFloor)
+        {
+            const double rate = cfg.midpointTrackingRate;
+            levelMidpoint  += rate * (cycleMid - levelMidpoint);
+            levelAmplitude += rate * (cycleAmp - levelAmplitude);
+        }
+    }
+
+    cycleMin =  1e30;
+    cycleMax = -1e30;
+    haveCycleExtent = false;
+}
+
+void PeriodDetector::processCrossing (double s)
+{
+    const double hysteresis = cfg.hysteresisFraction * levelAmplitude;
+
+    // Re-arm only after the signal has dropped clearly below the midpoint.
+    // Noise between the rails cannot retrigger.
+    if (! armed)
+    {
+        if (s < levelMidpoint - hysteresis)
+            armed = true;
+    }
+    else if (haveLastSample && lastSample < levelMidpoint && s >= levelMidpoint)
+    {
+        armed = false;
+
+        // Linear interpolation between the two samples straddling the
+        // midpoint. The previous sample sits at sampleCounter - 1.
+        //   correct:  x0 = (sampleCounter - 1) + f
+        // The old code computed (sampleCounter - 1) + (1 - f), mirroring the
+        // fraction within the interval and roughly doubling the jitter versus
+        // no interpolation at all.
+        const double slope = s - lastSample;               // > 0 by the branch
+        const double f = (slope != 0.0)
+                       ? (levelMidpoint - lastSample) / slope
+                       : 0.0;
+        recordCrossing ((double) (sampleCounter - 1) + f);
+    }
+
+    lastSample = s;
+    haveLastSample = true;
+}
+
+void PeriodDetector::recordCrossing (double position)
+{
+    if ((int) periods.size() >= cfg.maxPeriods)
+        return;
+
+    if (lastCrossing >= 0.0)
+        periods.push_back (position - lastCrossing);
+
+    lastCrossing = position;
+
+    trackLevel();
+
+    updateStability();
+}
+
+int PeriodDetector::numValidPeriods() const noexcept
+{
+    if (firstValidIndex < 0) return 0;
+    return (int) periods.size() - firstValidIndex;
+}
+
+const double* PeriodDetector::validPeriods() const noexcept
+{
+    if (firstValidIndex < 0) return periods.data();
+    return periods.data() + firstValidIndex;
+}
+
+int PeriodDetector::countOutliers (const double* values, int count)
+{
+    if (values == nullptr || count <= 0)
+        return 0;
+
+    // assign() over a vector whose capacity was reserved in reset() reuses the
+    // existing storage, so this does not allocate on the audio thread.
+    scratch.assign (values, values + count);
+
+    const size_t mid = scratch.size() / 2;
+    std::nth_element (scratch.begin(), scratch.begin() + (long) mid, scratch.end());
+    double median = scratch[mid];
+
+    if (scratch.size() % 2 == 0)
+        median = 0.5 * (*std::max_element (scratch.begin(), scratch.begin() + (long) mid) + median);
+
+    if (! (median > 0.0))
+        return count;
+
+    const double boundary = median * cfg.stabilityTolerance;
+
+    int outliers = 0;
+    for (int i = 0; i < count; ++i)
+        if (std::abs (values[i] - median) >= boundary)
+            ++outliers;
+
+    return outliers;
+}
+
+void PeriodDetector::updateStability()
+{
+    const int n = (int) periods.size();
+
+    if (firstValidIndex < 0 && n >= cfg.stabilityWindow)
+    {
+        if (isWithinTolerance (periods.data() + (n - cfg.stabilityWindow),
+                               cfg.stabilityWindow,
+                               cfg.stabilityTolerance))
+            firstValidIndex = n;
+    }
+
+    if (firstValidIndex >= 0 && numValidPeriods() >= cfg.requiredPeriods)
+    {
+        // The latch above only proves the rate held steady across one window.
+        // Re-check the whole collected set before declaring success: a drifting
+        // oscillator can satisfy a single window and then wander far outside
+        // tolerance, which is exactly what failedUnstable is for.
+        //
+        // The check counts how many periods sit off the grid rather than
+        // demanding that none do. A dropout inserts or drops a single crossing
+        // and so spoils at most two periods out of however many were collected,
+        // and failing the note for that discards a measurement the fit can
+        // repair exactly. Sustained jitter spoils a large share of them and
+        // still fails here. The comparison is against the median, not the mean:
+        // an outlier drags the mean towards itself and can hide behind it.
+        const int valid = numValidPeriods();
+        outlierCount = countOutliers (validPeriods(), valid);
+
+        const int allowed = std::max (cfg.minOutliersAllowed,
+                                      (int) (cfg.maxOutlierFraction * valid));
+
+        currentStatus = (outlierCount <= allowed)
+                      ? DetectorStatus::stable
+                      : DetectorStatus::failedUnstable;
+        return;
+    }
+
+    // Storage exhausted before collecting what we need. This must be a
+    // terminal state: the old code left the measurement running here, so it
+    // stalled until the top level timed out and then blamed the wrong thing.
+    // Distinguish the two causes - never steady at all, versus steady but not
+    // for long enough - because they need different advice to the user.
+    if (n >= cfg.maxPeriods)
+        currentStatus = (firstValidIndex < 0) ? DetectorStatus::failedUnstable
+                                              : DetectorStatus::failedBufferFull;
+}
+
+} // namespace vcotuner

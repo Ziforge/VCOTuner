@@ -12,6 +12,59 @@
 #include "VCOTuner.h"
 #include "CVOutput/CVOutputManager.h"
 
+#include "dsp/MeasurementTiming.h"
+
+#include <cmath>
+
+namespace
+{
+    /** How long a prep state waits for a pending stop request to be consumed.
+
+        Only the audio callback clears stopMeasurement, so the wait is bounded:
+        100 cycles of the 10 ms timer is one second, which is several times the
+        longest realistic buffer period (8192 frames at 44.1 kHz is 186 ms),
+        yet finite when no device is running at all.
+    */
+    constexpr int maxStopWaitCycles = 100;
+
+    /** Translates what the detector reported into the error the sweep records. */
+    vcotuner::MeasurementError errorForStatus (vcotuner::DetectorStatus status)
+    {
+        using vcotuner::DetectorStatus;
+        using vcotuner::MeasurementError;
+
+        switch (status)
+        {
+            case DetectorStatus::failedNoCrossings: return MeasurementError::noZeroCrossings;
+            case DetectorStatus::failedUnstable:    return MeasurementError::highJitter;
+            case DetectorStatus::failedBufferFull:  return MeasurementError::bufferFull;
+            case DetectorStatus::collecting:        return MeasurementError::stableTimeout;
+            case DetectorStatus::stable:            return MeasurementError::none;
+        }
+        return MeasurementError::none;
+    }
+
+    /** Frequency and its uncertainty from the periods the detector collected.
+
+        computeMeasurement() cannot serve the paths that use this: it also
+        expresses a pitch, which needs a reference frequency that these paths
+        either do not have yet or do not care about.
+    */
+    bool fitFrequency (const vcotuner::PeriodDetector& detector, double sampleRate,
+                       double& frequency, double& deviation)
+    {
+        const auto fit = vcotuner::fitPeriod (detector.validPeriods(),
+                                              detector.numValidPeriods());
+
+        if (! fit.valid || fit.periodSamples <= 0.0 || sampleRate <= 0.0)
+            return false;
+
+        frequency = sampleRate / fit.periodSamples;
+        deviation = frequency * (fit.periodStdError / fit.periodSamples);
+        return true;
+    }
+}
+
 VCOTuner::VCOTuner(AudioDeviceManager* d)
 {
     state = stopped;
@@ -22,6 +75,11 @@ VCOTuner::VCOTuner(AudioDeviceManager* d)
     deviceManager = d;
     midiChannel = 1;
     currentlyPlayingMidiNote = -1;
+    
+    // Reserve the detector's storage here, on the message thread. reset() is
+    // called from the audio callback and asks for this same capacity, which
+    // makes its reserve a no-op instead of a real-time heap allocation.
+    detector.prepare(vcotuner::PeriodDetectorConfig().maxPeriods);
     
     d->addChangeListener(this);
     d->addAudioCallback(this);
@@ -34,7 +92,7 @@ VCOTuner::~VCOTuner()
     stopTimer();
     
     if (currentlyPlayingMidiNote >= 0)
-        trySendMidiNoteOff(currentlyPlayingMidiNote);
+        releasePitch(currentlyPlayingMidiNote);
     
     deviceManager->removeAudioCallback(this);
 }
@@ -71,6 +129,12 @@ void VCOTuner::toggleState()
 
 void VCOTuner::start()
 {
+    if (cvOutputUnavailable())
+    {
+        errors.add(Errors::cvOutputUnavailable);
+        return;
+    }
+
     if (!isRunning())
         switchState(prepRefMeasurement);
 }
@@ -106,12 +170,20 @@ void VCOTuner::timerCallback()
         case stopped:
             break;
         case prepRefMeasurement:
+            // wait for the low level state machine to stop measuring (bounded;
+            // see awaitingStopRequest). Changing the pitch-range or resolution
+            // combo while running stops and restarts the tuner within a single
+            // message-thread call stack, so a stop request can still be pending
+            // here when the restart arrives.
+            if (awaitingStopRequest())
+                break;
+            
             if (cycleCounter == 0)
             {
                 // send reference midi note
                 referencePitch = (highestPitch + lowestPitch) / 2;
                 currentPitch = referencePitch;
-                trySendMidiNoteOn(currentPitch);
+                playPitch(currentPitch);
             }
             else
             {
@@ -120,7 +192,7 @@ void VCOTuner::timerCallback()
                 if (cycleCounter >= 10)
                 {
                     // start a measurement and see if we get a stable pitch here
-                    startMeasurement = true;
+                    startDetectorRun(currentPitch);
                     switchState(refMeasurement);
                     break;
                 }
@@ -133,41 +205,40 @@ void VCOTuner::timerCallback()
             if (!startMeasurement)
             {
                 // send note off
-                trySendMidiNoteOff(currentPitch);
+                releasePitch(currentPitch);
                 
-                if (lError == notStable)
+                // A failed reference measurement is always fatal: every other
+                // note's pitch is expressed relative to this frequency, so
+                // without it the rest of the sweep would be meaningless.
+                const vcotuner::DetectorStatus status = lastDetectorStatus();
+                
+                if (status != vcotuner::DetectorStatus::stable)
+                {
+                    errors.add(errorMessageForStatus(status));
+                    switchState(stopped);
+                    break;
+                }
+                
+                double frequency = 0.0, deviation = 0.0;
+                if (!fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
                     errors.add(Errors::highJitter);
                     switchState(stopped);
-                }
-                else
-                {
-                    // calculate frequency
-                    int numMeasurements = periodLengthsHead - indexOfFirstValidPeriodLength;
-                    double accumulator = 0;
-                    for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                        accumulator += periodLengths[i];
-                    
-                    double averagePeriod = accumulator / (double) numMeasurements;
-                    
-                    referenceFrequency = float(sampleRate / averagePeriod);
-                    
-                    // prepare next measurement
-                    currentPitch = lowestPitch;
-                    currentIndex = 0;
-                    switchState(prepMeasurement);
                     break;
                 }
+                
+                referenceFrequency = (float) frequency;
+                
+                // prepare next measurement
+                currentPitch = lowestPitch;
+                currentIndex = 0;
+                switchState(prepMeasurement);
+                break;
             }
 
             if (cycleCounter > 1000)
             {
-                if (periodLengthsHead == 0)
-                    errors.add(Errors::noZeroCrossings);
-                else if (lError == notStable)
-                    errors.add(Errors::highJitterTimeOut);
-                else
-                    errors.add(Errors::stableTimeout);
+                errors.add(errorMessageForStatus(lastDetectorStatus()));
                 stopMeasurement = true;
                 switchState(stopped);
                 break;
@@ -176,10 +247,17 @@ void VCOTuner::timerCallback()
             break;
         }
         case prepMeasurement:
+            // wait for low level state machine to stop measuring: handing it a
+            // new run while a stop request is pending would have it consume the
+            // stale request and kill the run it was meant to start. Bounded;
+            // see awaitingStopRequest.
+            if (awaitingStopRequest())
+                break;
+            
             if (cycleCounter == 0)
             {
                 // send midi note
-                trySendMidiNoteOn(currentPitch);
+                playPitch(currentPitch);
             }
             else
             {
@@ -188,7 +266,7 @@ void VCOTuner::timerCallback()
                 if (cycleCounter >= 10)
                 {
                     // start a measurement and see if we get a stable pitch here
-                    startMeasurement = true;
+                    startDetectorRun(currentPitch);
                     switchState(measurement);
                     break;
                 }
@@ -200,89 +278,78 @@ void VCOTuner::timerCallback()
             // measurement done
             if (!startMeasurement)
             {
-                // send note off
-                trySendMidiNoteOff(currentPitch);
-
-                if (lError == notStable)
+                // A single note that cannot be measured is not fatal: record it
+                // and carry on with the sweep. failCurrentNote() sends the note
+                // off, so it is not sent here.
+                const vcotuner::DetectorStatus status = lastDetectorStatus();
+                
+                if (status != vcotuner::DetectorStatus::stable)
                 {
-                    errors.add(Errors::highJitter);
-                    switchState(stopped);
-                }
-                else
-                {
-                    // calculate frequency
-                    int numMeasurements = periodLengthsHead - indexOfFirstValidPeriodLength;
-                    double accumulator = 0;
-                    for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                        accumulator += periodLengths[i];
-                    
-                    double averagePeriod = (double) accumulator / (double) numMeasurements;
-                    
-                    double frequency = sampleRate / averagePeriod;
-                    double pitch = 12.0 * log(frequency / referenceFrequency) / log(2.0) + referencePitch;
-                    
-                    // check if the frequency has changed compared to the reference frequency
-                    // if not, it is likely that the MIDI output is not working. Do this only for the very first measurement
-                    if (currentIndex == 0)
-                    {
-                        if (std::abs(frequency - referenceFrequency)/referenceFrequency < 0.1)
-                        {
-                            errors.add(Errors::noFrequencyChangeBetweenMeasurements);
-                            switchState(stopped);
-                        }
-                    }
-                    
-                    // estimate deviation of frequency and pitch
-                    double fAccumulator = 0;
-                    double pAccumulator = 0;
-                    for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                    {
-                        double f = sampleRate / (double) periodLengths[i];
-                        fAccumulator += pow(f - frequency, 2);
-                        pAccumulator += pow(12.0 * log(f / referenceFrequency) / log(2.0) + referencePitch - pitch, 2);
-                    }
-                    fAccumulator = fAccumulator / (numMeasurements - 1);
-                    pAccumulator = pAccumulator / (numMeasurements - 1);
-                    double fDeviation = sqrt(fAccumulator);
-                    double pDeviation = sqrt(pAccumulator);
-                    
-                    measurement_t m;
-                    m.timestamp = Time::getCurrentTime();
-                    m.frequency = frequency;
-                    m.pitch = pitch;
-                    m.midiPitch = currentPitch;
-                    m.pitchOffset = pitch - currentPitch;
-                    m.freqDeviation = fDeviation;
-                    m.pitchDeviation = pDeviation;
-                    m.numMeasurements = numMeasurements;
-                    listeners.call(&Listener::newMeasurementReady, m);
-                    
-                    // prepare next measurement
-                    currentPitch += pitchIncrement;
-                    currentIndex++;
-                    
-                    if (currentPitch <= highestPitch)
-                        switchState(prepMeasurement);
-                    else
-                        switchState(finished);
+                    failCurrentNote(errorForStatus(status));
                     break;
                 }
+                
+                const auto result = vcotuner::computeMeasurement(detector.validPeriods(),
+                                                                 detector.numValidPeriods(),
+                                                                 effectiveSampleRate(),
+                                                                 referenceFrequency,
+                                                                 referencePitch);
+                if (!result.valid)
+                {
+                    failCurrentNote(vcotuner::MeasurementError::highJitter);
+                    break;
+                }
+                
+                // send note off
+                releasePitch(currentPitch);
+                
+                // check if the frequency has changed compared to the reference frequency
+                // if not, it is likely that the MIDI output is not working. This check runs
+                // on the first successfully measured note other than the reference pitch
+                // itself: currentIndex only advances on success, so it can still be 0 when
+                // the sweep reaches referencePitch, and comparing referencePitch's own
+                // frequency against referenceFrequency would be meaningless (they are the
+                // same measurement by construction).
+                if (currentIndex == 0
+                    && currentPitch != referencePitch
+                    && std::abs(result.frequency - referenceFrequency) / referenceFrequency < 0.1)
+                {
+                    errors.add(Errors::noFrequencyChangeBetweenMeasurements);
+                    switchState(stopped);
+                    break;
+                }
+                
+                measurement_t m;
+                m.timestamp = Time::getCurrentTime();
+                m.frequency = result.frequency;
+                m.pitch = result.pitch;
+                m.midiPitch = currentPitch;
+                m.pitchOffset = result.pitch - currentPitch;
+                m.freqDeviation = result.frequencyDeviation;
+                m.pitchDeviation = result.pitchDeviation;
+                m.numMeasurements = detector.numValidPeriods();
+                m.rejectedCrossings = result.rejectedCrossings;
+                listeners.call(&Listener::newMeasurementReady, m);
+                
+                // prepare next measurement
+                currentPitch += pitchIncrement;
+                currentIndex++;
+                
+                if (currentPitch <= highestPitch)
+                    switchState(prepMeasurement);
+                else
+                    switchState(finished);
+                break;
             }
             
-            float expectedFrequency = referenceFrequency * powf(2,((float) currentPitch - (float) referencePitch)/12.0f);
-            float expectedTime = 1.0f / (float) expectedFrequency * numPeriodSamples;
-            expectedTime *= 2;
-            int expectedCycles = juce::roundToInt(expectedTime * 100);
+            const double expectedFrequency = referenceFrequency
+                * std::pow(2.0, ((double) currentPitch - (double) referencePitch) / 12.0);
+            const int expectedCycles = vcotuner::computeTimeoutCycles(expectedFrequency,
+                                                                      numPeriodSamples,
+                                                                      0.01, 0.3);
             if (cycleCounter > expectedCycles)
             {
-                if (periodLengthsHead == 0)
-                    errors.add(Errors::noZeroCrossings);
-                else if (lError == notStable)
-                    errors.add(Errors::highJitterTimeOut);
-                else
-                    errors.add(Errors::stableTimeout);
-                stopMeasurement = true;
-                switchState(stopped);
+                failCurrentNote(errorForStatus(lastDetectorStatus()));
                 break;
             }
             cycleCounter++;
@@ -292,13 +359,14 @@ void VCOTuner::timerCallback()
             break;
         case prepareContinuousFrequencyMeasurement:
         {
-            // wait for low level state machine to stop measuring
-            if (stopMeasurement)
+            // wait for low level state machine to stop measuring (bounded;
+            // see awaitingStopRequest)
+            if (awaitingStopRequest())
                 break;
                 
             // send midi note and start measuring
-            trySendMidiNoteOn(continuousFrequencyMeasurementPitch);
-            startMeasurement = true;
+            playPitch(continuousFrequencyMeasurementPitch);
+            startDetectorRun(continuousFrequencyMeasurementPitch);
             switchState(continuousFrequencyMeasurement);
             cycleCounter++;
         } break;
@@ -307,44 +375,32 @@ void VCOTuner::timerCallback()
             // if the measurement is done)
             if (!startMeasurement)
             {
-                // calculate frequency
-                int numMeasurements = periodLengthsHead - indexOfFirstValidPeriodLength;
-                double accumulator = 0;
-                for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                    accumulator += periodLengths[i];
-                
-                double averagePeriod = (double) accumulator / (double) numMeasurements;
-                
-                double frequency = sampleRate / averagePeriod;
-                
-                // estimate deviation of frequency
-                double fAccumulator = 0;
-                for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
+                // Keep the previous reading when this one did not settle - this
+                // mode runs until the user stops it, so there is nobody to tell.
+                double frequency = 0.0, deviation = 0.0;
+                if (lastDetectorStatus() == vcotuner::DetectorStatus::stable
+                    && fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
-                    double f = sampleRate / (double) periodLengths[i];
-                    fAccumulator += pow(f - frequency, 2);
+                    continuousFreqMeasurementResult = frequency;
+                    continuousFreqMeasurementDeviation = deviation;
                 }
-                fAccumulator = fAccumulator / (numMeasurements - 1);
-                double fDeviation = sqrt(fAccumulator);
-                
-                continuousFreqMeasurementResult = frequency;
-                continuousFreqMeasurementDeviation = fDeviation;
                 
                 // restart measurement
-                startMeasurement = true;
+                startDetectorRun(continuousFrequencyMeasurementPitch);
             }
             cycleCounter++;
         } break;
         case prepareSingleMeasurement:
         {
-            // wait for low level state machine to stop measuring
-            if (stopMeasurement)
+            // wait for low level state machine to stop measuring (bounded;
+            // see awaitingStopRequest)
+            if (awaitingStopRequest())
                 break;
             
             if (cycleCounter == 0)
             {
                 // send midi note
-                trySendMidiNoteOn(singleMeasurementPitch);
+                playPitch(singleMeasurementPitch);
             }
             else
             {
@@ -353,7 +409,7 @@ void VCOTuner::timerCallback()
                 if (cycleCounter >= 10)
                 {
                     // start a measurement and see if we get a stable pitch here
-                    startMeasurement = true;
+                    startDetectorRun(singleMeasurementPitch);
                     switchState(singleMeasurement);
                     break;
                 }
@@ -366,52 +422,36 @@ void VCOTuner::timerCallback()
             if (!startMeasurement)
             {
                 // send note off
-                trySendMidiNoteOff(singleMeasurementPitch);
+                releasePitch(singleMeasurementPitch);
                 
-                if (lError == notStable)
+                const vcotuner::DetectorStatus status = lastDetectorStatus();
+                
+                if (status != vcotuner::DetectorStatus::stable)
+                {
+                    errors.add(errorMessageForStatus(status));
+                    switchState(stopped);
+                    break;
+                }
+                
+                double frequency = 0.0, deviation = 0.0;
+                if (!fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
                     errors.add(Errors::highJitter);
                     switchState(stopped);
-                }
-                else
-                {
-                    // calculate frequency
-                    int numMeasurements = periodLengthsHead - indexOfFirstValidPeriodLength;
-                    double accumulator = 0;
-                    for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                        accumulator += periodLengths[i];
-                    
-                    double averagePeriod = (double) accumulator / (double) numMeasurements;
-                    
-                    double frequency = sampleRate / averagePeriod;
-                    
-                    // estimate deviation of frequency
-                    double fAccumulator = 0;
-                    for (int i = indexOfFirstValidPeriodLength; i < periodLengthsHead; i++)
-                    {
-                        double f = sampleRate / (double) periodLengths[i];
-                        fAccumulator += pow(f - frequency, 2);
-                    }
-                    fAccumulator = fAccumulator / (numMeasurements - 1);
-                    double fDeviation = sqrt(fAccumulator);
-                    
-                    singleMeasurementResult = frequency;
-                    singleMeasurementDeviation = fDeviation;
-                    
-                    switchState(finished);
                     break;
                 }
+                
+                singleMeasurementResult = frequency;
+                singleMeasurementDeviation = deviation;
+                
+                switchState(finished);
+                break;
             }
             
             // timeout handling
             if (cycleCounter > 1000)
             {
-                if (periodLengthsHead == 0)
-                    errors.add(Errors::noZeroCrossings);
-                else if (lError == notStable)
-                    errors.add(Errors::highJitterTimeOut);
-                else
-                    errors.add(Errors::stableTimeout);
+                errors.add(errorMessageForStatus(lastDetectorStatus()));
                 stopMeasurement = true;
                 switchState(stopped);
                 break;
@@ -427,13 +467,50 @@ void VCOTuner::timerCallback()
 void VCOTuner::startContinuousMeasurement(int pitch)
 {
     continuousFrequencyMeasurementPitch = pitch;
+    continuousFreqMeasurementResult = -1.0;
+    continuousFreqMeasurementDeviation = 0.0;
     if (state != stopped && state != finished)
         switchState(stopped);
     state = prepareContinuousFrequencyMeasurement;
 }
 
-void VCOTuner::trySendMidiNoteOn(int pitch)
+void VCOTuner::setPitchSource (PitchSource source)
 {
+    if (source == pitchSource)
+        return;
+
+    // Leaving CV driving after switching to MIDI would have two things setting
+    // the pitch at once, so hand the oscillator back before changing over.
+    if (pitchSource == PitchSource::cvOutput && cvOutputManager != nullptr)
+        cvOutputManager->setActive(false);
+
+    pitchSource = source;
+}
+
+bool VCOTuner::cvOutputUnavailable() const noexcept
+{
+    return pitchSource == PitchSource::cvOutput
+        && (cvOutputManager == nullptr
+            || availableOutputChannels.load(std::memory_order_relaxed) <= 0);
+}
+
+void VCOTuner::playPitch(int pitch)
+{
+    if (pitchSource == PitchSource::cvOutput)
+    {
+        if (cvOutputManager == nullptr)
+        {
+            errors.add(Errors::cvOutputUnavailable);
+            switchState(stopped);
+            return;
+        }
+
+        cvOutputManager->setActive(true);
+        cvOutputManager->outputVoltage(cvOutputManager->midiToVoltage(pitch));
+        currentlyPlayingMidiNote = pitch;
+        return;
+    }
+
     MidiOutput* midiOut = deviceManager->getDefaultMidiOutput();
     if (midiOut == nullptr)
     {
@@ -443,14 +520,24 @@ void VCOTuner::trySendMidiNoteOn(int pitch)
     }
     
     if (currentlyPlayingMidiNote != -1)
-        trySendMidiNoteOff(currentlyPlayingMidiNote);
+        releasePitch(currentlyPlayingMidiNote);
     
     midiOut->sendMessageNow(MidiMessage::noteOn(midiChannel, pitch, (uint8_t) 100));
     currentlyPlayingMidiNote = pitch;
 }
 
-void VCOTuner::trySendMidiNoteOff(int pitch)
+void VCOTuner::releasePitch(int pitch)
 {
+    if (pitchSource == PitchSource::cvOutput)
+    {
+        // A pitch CV has no note-off: the voltage is the note. Holding it
+        // leaves the oscillator where it was, so the next pitch settles from
+        // a neighbouring voltage rather than from 0 V -- and an oscillator
+        // left sounding is what lets a trimmer be adjusted between sweeps.
+        currentlyPlayingMidiNote = -1;
+        return;
+    }
+
     MidiOutput* midiOut = deviceManager->getDefaultMidiOutput();
     if (midiOut == nullptr)
     {
@@ -463,16 +550,193 @@ void VCOTuner::trySendMidiNoteOff(int pitch)
     currentlyPlayingMidiNote = -1;
 }
 
-/** inherited from AudioIODeviceCallback */
-void VCOTuner::audioDeviceIOCallback (const float** inputChannelData,
-                                    int numInputChannels,
-                                    float** outputChannelData,
-                                    int numOutputChannels,
-                                    int numSamples)
+void VCOTuner::startDetectorRun(int pitch)
 {
-    if (inputChannelData == nullptr)
+    // Size the detector's level tracking window to two cycles of the frequency
+    // we expect at this pitch: the trigger level is latched at the end of that
+    // window, so a low note needs a longer look at the signal than a high one.
+    const double expectedFreq = (state == prepRefMeasurement || referenceFrequency <= 0.0f)
+        ? 440.0 * std::pow(2.0, (pitch - 69) / 12.0)
+        : referenceFrequency * std::pow(2.0, (pitch - referencePitch) / 12.0);
+    const double twoCycles = (expectedFreq > 0.0) ? (2.0 * sampleRate / expectedFreq) : 2048.0;
+    currentWarmupSamples = jlimit(256, 48000, (int) twoCycles);
+    
+    // Publish 'collecting' before handing the detector to the audio thread, so
+    // that the state machine cannot read the previous run's terminal status
+    // while it is waiting for this one.
+    detectorStatusFlag = (int) vcotuner::DetectorStatus::collecting;
+    startMeasurement = true;
+}
+
+bool VCOTuner::awaitingStopRequest()
+{
+    if (!stopMeasurement)
+    {
+        stopWaitCounter = 0;
+        return false;
+    }
+
+    if (++stopWaitCounter <= maxStopWaitCycles)
+        return true;
+
+    // Nothing has consumed the stop request for a full second, so no audio
+    // callback is running to clear it. Waiting on regardless would look to the
+    // user exactly like the tuner having frozen, so report it with the message
+    // that already describes this situation and stop.
+    errors.add(Errors::audioDeviceStoppedDuringMeasurement);
+    switchState(stopped);   // resets stopWaitCounter along with cycleCounter
+    return true;
+}
+
+void VCOTuner::failCurrentNote(vcotuner::MeasurementError reason)
+{
+    releasePitch(currentPitch);
+    
+    // Only cancel a run that is actually in flight - the timeout path. When the
+    // detector finished on its own the audio thread has already cleared its own
+    // state, and a stop request left armed here would be consumed by the next
+    // note's run instead.
+    if (startMeasurement)
+        stopMeasurement = true;
+    
+    // releasePitch() stops the tuner when the MIDI device has gone away.
+    // That is fatal, so do not resume the sweep on top of it.
+    if (state == stopped)
         return;
-    const AudioBuffer<const float> inputBuffer(inputChannelData, numInputChannels, numSamples);
+    
+    failureTracker.recordFailure(currentPitch, reason);
+    listeners.call(&Listener::measurementFailed, currentPitch, reason);
+    
+    // currentIndex deliberately does not advance here: it counts *successful*
+    // measurements, and the "MIDI-to-CV interface isn't responding" check keys
+    // on currentIndex == 0 to run on the first one. Advancing it on failure
+    // would skip that check for the whole sweep whenever the first note fails.
+    currentPitch += pitchIncrement;
+    
+    if (currentPitch <= highestPitch)
+        switchState(prepMeasurement);
+    else
+        switchState(finished);
+}
+
+const String& VCOTuner::errorMessageForStatus(vcotuner::DetectorStatus status) const
+{
+    switch (status)
+    {
+        case vcotuner::DetectorStatus::failedNoCrossings:
+            return Errors::noZeroCrossings;
+        case vcotuner::DetectorStatus::failedUnstable:
+            return Errors::highJitter;
+        case vcotuner::DetectorStatus::failedBufferFull:
+            // Distinct from highJitter: the signal may have been perfectly
+            // steady, it just needed more storage than this resolution setting
+            // allows before it could be confirmed stable.
+            return Errors::bufferFull;
+        case vcotuner::DetectorStatus::collecting:
+        case vcotuner::DetectorStatus::stable:
+            break;
+    }
+
+    // Still collecting when the caller gave up. This covers two different
+    // situations that look the same from here: the crossings never settled
+    // into a steady rate, or the signal was too weak/intermittent for enough
+    // of them to arrive in the first place (warm-up never finished). Say
+    // neither is confirmed rather than asserting the first.
+    return Errors::stableTimeout;
+}
+
+/** Short, user-facing description of a per-note measurement failure. Declared
+    in VCOTuner.h (outside the class) rather than in Source/dsp/, since it
+    returns a JUCE String and Source/dsp/ must stay JUCE-free. */
+String describeError (vcotuner::MeasurementError error)
+{
+    using vcotuner::MeasurementError;
+    switch (error)
+    {
+        case MeasurementError::highJitter:
+        case MeasurementError::highJitterTimeOut: // unreachable; see MeasurementError.h
+            return "unsteady rate";
+        case MeasurementError::noZeroCrossings:
+            return "no signal detected";
+        case MeasurementError::stableTimeout:
+            return "timed out";
+        case MeasurementError::bufferFull:
+            return "settled, but not long enough; try a lower resolution";
+        case MeasurementError::none:
+        case MeasurementError::noFrequencyChange:
+        case MeasurementError::noMidiDevice:
+        case MeasurementError::audioDeviceStopped:
+            break;
+        // No default label, deliberately, matching isFatal(),
+        // errorForStatus() and errorMessageForStatus(): -Wswitch then flags a
+        // future enumerator that nobody has classified here.
+    }
+
+    // The fatal reasons never reach here - they abort the sweep and are
+    // reported through tunerStopped() instead of the per-note failure list
+    // this describes.
+    return "failed";
+}
+
+void showMeasurementFailureSummary (const std::vector<vcotuner::NoteFailure>& failures)
+{
+    if (failures.empty())
+        return;
+
+    StringArray lines;
+    for (const auto& f : failures)
+        lines.add ("  - MIDI " + String (f.midiPitch) + " - " + describeError (f.reason));
+
+    NativeMessageBox::showMessageBox (AlertWindow::InfoIcon,
+        "Measurement finished",
+        String (failures.size()) + " of the measured notes could not be read:\n\n"
+            + lines.joinIntoString ("\n"));
+}
+
+/** inherited from AudioIODeviceCallback */
+void VCOTuner::audioDeviceIOCallbackWithContext (const float* const* inputChannelData,
+                                    int numInputChannels,
+                                    float* const* outputChannelData,
+                                    int numOutputChannels,
+                                    int numSamples,
+                                    const AudioIODeviceCallbackContext& context)
+{
+    // CV output has to be serviced on every callback, not only while a
+    // measurement is running: the voltage is what holds the oscillator at
+    // pitch, and the early returns below would otherwise drop it to 0 V
+    // between notes and after a sweep.
+    // Channels that were not enabled when the device was opened are null, and
+    // AudioBuffer::clear() would memset straight through them.
+    availableOutputChannels.store(outputChannelData != nullptr ? numOutputChannels : 0,
+                                  std::memory_order_relaxed);
+
+    if (outputChannelData != nullptr)
+    {
+        const bool cvActive = cvOutputManager != nullptr && cvOutputManager->isActive();
+        const int firstChannelToClear = (cvActive && numOutputChannels > 0
+                                         && outputChannelData[0] != nullptr) ? 1 : 0;
+
+        if (firstChannelToClear == 1)
+            cvOutputManager->fillOutputBuffer(outputChannelData[0], numSamples);
+
+        // anything that isn't the CV channel stays silent
+        for (int channel = firstChannelToClear; channel < numOutputChannels; channel++)
+            if (outputChannelData[channel] != nullptr)
+                FloatVectorOperations::clear(outputChannelData[channel], numSamples);
+    }
+
+    // Fed on every callback, ahead of the early returns: the converter's clock
+    // runs whether or not a note is being measured, and the estimate is only
+    // as good as the baseline it was taken over.
+    clockCalibrator.addBlock (numSamples, context.hostTimeNs);
+
+    if (++clockPublishCounter >= 64)
+    {
+        clockPublishCounter = 0;
+        const auto e = clockCalibrator.estimate();
+        measuredSampleRate.store (e.valid ? e.sampleRateHz : 0.0, std::memory_order_relaxed);
+        clockPpm.store (e.valid ? e.ppmOffset : 0.0, std::memory_order_relaxed);
+    }
 
     if (stopMeasurement)
     {
@@ -480,122 +744,58 @@ void VCOTuner::audioDeviceIOCallback (const float** inputChannelData,
         stopMeasurement = false;
         initialized = false;
     }
-    
-    if (startMeasurement)
+
+    if (!startMeasurement)
+        return;
+
+    // Guard the channel access: numInputChannels was never checked before,
+    // so a device with no enabled input channels read out of bounds.
+    if (inputChannelData == nullptr || numInputChannels <= 0
+        || inputChannelData[0] == nullptr)
+        return;
+
+    if (!initialized)
     {
-        // check if measurement was initialized
-        if (!initialized)
-        {
-            lError = noError;
-            sampleCounter = 0;
-            lastZeroCrossing = -1;
-            indexOfFirstValidPeriodLength = -1;
-            periodLengthsHead = 0;
-            initialized = true;
-        }
-        
-        // try to find a zero crossing (- => +)
-        for (int i = 0; i < numSamples; i++)
-        {
-            float currentSample = inputBuffer.getSample(0, i);
-            if (lastSample < 0 && currentSample >= 0)
-            {
-                if (periodLengthsHead >= maxNumPeriodLengths)
-                    break;
-                
-                // interpolate line between the sample before and after the crossing
-                // y = mx + n
-                double m = (lastSample - currentSample);
-                double n = lastSample - m*(sampleCounter);
-                
-                // zero crossing of interpolated line: y = 0 => x0 = -n/m
-                double zeroCrossingPos = -n / m;
-                
-                periodLengths[periodLengthsHead++] = zeroCrossingPos - lastZeroCrossing;
-                lastZeroCrossing = zeroCrossingPos;                
-            }
-            lastSample = currentSample;
-            sampleCounter++;
-        }
-        
-        // see if the period length is stable
-        if (periodLengthsHead > 5 && indexOfFirstValidPeriodLength < 0)
-        {
-            double sum = 0;
-            for (int i = periodLengthsHead - 5; i < periodLengthsHead; i++)
-            {
-                sum += periodLengths[i];
-            }
-            double average = sum / 5.0;
-            
-            bool okay = true;
-            double boundary = average * 0.1; // max 10% error allowed
-            for (int i = periodLengthsHead - 5; i < periodLengthsHead; i++)
-            {
-                if (std::abs(periodLengths[i] - average) >= boundary)
-                    okay = false;
-            }
-            
-            if (okay)
-            {
-                indexOfFirstValidPeriodLength = periodLengthsHead;
-            }
-        }
-        
-        // finish measurement when the required number of valid measurements are made
-        int numMeasurements = periodLengthsHead - indexOfFirstValidPeriodLength;
-        if ((indexOfFirstValidPeriodLength > 0) && (numMeasurements > numPeriodSamples))
-        {
-            lError = noError;
-            initialized = false;
-            startMeasurement = false;
-        }
-        // the pitch hasn't stabilized yet.
-        // assign the notStable error prematurely, just in case the top level statemachine runs into
-        // a timeout and wants to know whats going on.
-        else if (indexOfFirstValidPeriodLength < 0)
-        {
-            lError = notStable;
-            
-            // ran out of recording space => period length too jittery or does change constantly - stop here.
-            if ((periodLengthsHead >= maxNumPeriodLengths))
-            {
-                initialized = false;
-                startMeasurement = false;
-            }
-        }
+        vcotuner::PeriodDetectorConfig cfg;
+        cfg.requiredPeriods = numPeriodSamples;
+        cfg.warmupSamples   = currentWarmupSamples;
+        // cfg.maxPeriods must stay at the default the constructor reserved,
+        // otherwise this reset() would allocate on the audio thread.
+        jassert(cfg.maxPeriods == vcotuner::PeriodDetectorConfig().maxPeriods);
+        detector.reset(cfg);
+        initialized = true;
     }
 
-    // Handle CV output
-    if (outputChannelData != nullptr && numOutputChannels > 0)
-    {
-        AudioBuffer<float> outputBuffer(outputChannelData, numOutputChannels, numSamples);
+    detector.processBlock(inputChannelData[0], numSamples);
+    detectorStatusFlag = (int) detector.status();
 
-        // Use CVOutputManager if available and active
-        if (cvOutputManager != nullptr && cvOutputManager->isActive())
-        {
-            cvOutputManager->fillOutputBuffer(outputBuffer.getWritePointer(0), numSamples);
-        }
-        else
-        {
-            outputBuffer.clear();
-        }
+    if (detector.status() != vcotuner::DetectorStatus::collecting)
+    {
+        initialized = false;
+        // Published last: the state machine treats this as permission to read
+        // the detector, so every write above must already be visible.
+        startMeasurement = false;
     }
 }
 
 void VCOTuner::switchState(VCOTuner::State newState)
 {
     cycleCounter = 0;
+    stopWaitCounter = 0;
     state = newState;
     if (state == stopped)
     {
         if (currentlyPlayingMidiNote >= 0 && currentlyPlayingMidiNote < 128)
-            trySendMidiNoteOff(currentlyPlayingMidiNote);
+            releasePitch(currentlyPlayingMidiNote);
         stopMeasurement = true;
         listeners.call(&Listener::tunerStopped);
     }
     else if (newState == prepRefMeasurement)
+    {
+        // a new sweep: the status line should describe this pass, not history
+        failureTracker.beginSweep();
         listeners.call(&Listener::tunerStarted);
+    }
     else if (newState == finished)
         listeners.call(&Listener::tunerFinished);
     
@@ -606,6 +806,14 @@ void VCOTuner::switchState(VCOTuner::State newState)
 void VCOTuner::audioDeviceAboutToStart (AudioIODevice* device)
 {
     sampleRate = device->getCurrentSampleRate();
+
+    // A new device is a new clock: nothing measured about the old one carries
+    // over, and applying its correction here would be worse than not
+    // correcting at all.
+    clockCalibrator.reset (sampleRate);
+    measuredSampleRate.store (0.0, std::memory_order_relaxed);
+    clockPpm.store (0.0, std::memory_order_relaxed);
+    clockPublishCounter = 0;
 }
 
 /** inherited from AudioIODeviceCallback */
@@ -660,11 +868,12 @@ const String VCOTuner::Errors::highJitter = "There are zero crossings in the inc
 
 const String VCOTuner::Errors::noZeroCrossings = "The incoming audio signal does not seem to contain any zero-crossings. Are you sure the oscillator signal is getting through to us? Check your audio device settings.";
 
-const String VCOTuner::Errors::highJitterTimeOut = "Timeout. " + highJitter;
+const String VCOTuner::Errors::bufferFull = "The signal did settle into a steady rate - it just didn't hold that rate long enough to finish the measurement before the buffer ran out of storage. Try a lower resolution setting (fewer periods per note); needing fewer periods means the same buffer is enough to complete the measurement.";
 
-const String VCOTuner::Errors::stableTimeout = "There are some zero crossings in the incoming signal and they seem to come in at a constant rate - but they are coming in much slower than they should be. Are you recording from the right oscillator?";
+const String VCOTuner::Errors::stableTimeout = "The measurement did not finish in time. Either the incoming zero-crossings never settled into a steady rate, or the signal was too weak or intermittent for enough of them to arrive in the first place. Are you recording from the right oscillator, on the right channel, and is its level high enough?";
 
-const String VCOTuner::Errors::noFrequencyChangeBetweenMeasurements = "Apparently the frequency of the oscillator is not changing between measurements. Please check if your MIDI-to-CV interface is set to the correct MIDI channel and make sure that it is selected as the default midi output device in the audio and midi settings.";
+const String VCOTuner::Errors::noFrequencyChangeBetweenMeasurements = "Apparently the frequency of the oscillator is not changing between measurements. If the pitch source is MIDI, check that your MIDI-to-CV interface is set to the correct MIDI channel and is selected as the default MIDI output device in the audio and midi settings. If the pitch source is CV output, check that the audio interface output is DC-coupled and patched to the oscillator's pitch input.";
+const String VCOTuner::Errors::cvOutputUnavailable = "The pitch source is set to CV output, but there is no audio output to send it to. Open the audio settings and select an output device with at least one channel. The output must be DC-coupled: an AC-coupled output cannot carry a pitch voltage.";
 
 const String VCOTuner::Errors::noMidiDeviceAvailable = "You don't have a MIDI output device selected or the selected device is not available.";
 

@@ -9,13 +9,13 @@
 # CMake's behaviour is compatible with the named version. This is a standard CMake command, so more
 # information can be found in the CMake docs.
 
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.22)
 
 # The top-level CMakeLists.txt file for a project must contain a literal, direct call to the
 # `project()` command. `project()` sets up some helpful variables that describe source/binary
 # directories, and the current project version. This is a standard CMake command.
 
-project(VCO_TUNER VERSION 0.3.0)
+project(VCO_TUNER VERSION 0.4.0)
 
 # Set c++17
 set(CMAKE_CXX_STANDARD 17)
@@ -55,6 +55,27 @@ juce_generate_juce_header(VCOTuner)
 # CMake command.
 
 include_directories(Source)
+
+# Pure DSP logic, no JUCE dependency. Linked by both the app and the tests.
+add_library(vcotuner_dsp STATIC
+    Source/dsp/CvScaling.cpp
+    Source/dsp/ClockCalibrator.cpp
+    Source/dsp/PeriodDetector.cpp
+    Source/dsp/MeasurementStatistics.cpp
+    Source/dsp/MeasurementError.cpp
+    Source/dsp/MeasurementTiming.cpp)
+target_include_directories(vcotuner_dsp PUBLIC Source)
+target_compile_features(vcotuner_dsp PUBLIC cxx_std_17)
+
+# OFF by default: the three artifact-producing CI jobs configure with a bare
+# `cmake -B build`, and ON would have each of them FetchContent Catch2 from
+# github.com on every push. A plain local configure would need network access
+# too. The unitTests job passes -DVCOTUNER_BUILD_TESTS=ON explicitly.
+option(VCOTUNER_BUILD_TESTS "Build the unit tests" OFF)
+if(VCOTUNER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 target_sources(VCOTuner
     PRIVATE
@@ -142,6 +163,7 @@ target_compile_definitions(VCOTuner
 target_link_libraries(VCOTuner
     PRIVATE
         # GuiAppData            # If we'd created a binary data target, we'd link to it here
+        vcotuner_dsp
         juce::juce_gui_basics
         juce::juce_gui_extra
         juce::juce_audio_devices

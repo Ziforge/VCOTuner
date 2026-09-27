@@ -10,6 +10,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../dsp/CvScaling.h"
 #include <atomic>
 #include <vector>
 

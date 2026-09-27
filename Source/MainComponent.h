@@ -41,9 +41,8 @@ public:
     virtual void tunerStopped() override;
     virtual void tunerFinished() override;
     virtual void tunerStatusChanged(String statusString) override;
-    
-    void startCreatingReport();
-    
+    virtual void measurementFailed (int midiPitch, vcotuner::MeasurementError reason) override;
+
 private:
     //==============================================================================
     AudioDeviceManager deviceManager;
@@ -62,6 +61,12 @@ private:
     TunerDisplay tunerDisplay;
     Visualizer display;
     Label statusLabel;
+    /** names the notes that are currently failing to measure. Cleared at the
+        start of every run (tunerStarted) and rebuilt from tuner.getFailures()
+        as failures come in, so it always reflects the current sweep only. */
+    Label failureLabel;
+    Label pitchSourceLabel;
+    ComboBox pitchSource;
     Label regimeLabel;
     ComboBox regime;
     Label resolutionLabel;
@@ -76,14 +81,12 @@ private:
     static const int numRegimes = 12;
     static const regime_t regimes[numRegimes];
     static const char* regimeTexts[numRegimes];
-    static const regime_t reportRange;
     static const int numResolutions = 5;
     static const int resolutions[numResolutions];
     static const char* resolutionsTexts[numResolutions];
-    
+
     bool cycle;
-    bool creatingReport;
-    
+
     static const String welcomeText;
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
