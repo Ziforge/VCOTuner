@@ -15,13 +15,26 @@
 #include "ModernLookAndFeel.h"
 #include "TunerDisplay.h"
 
-// Global look and feel instance
-static ModernLookAndFeel modernLookAndFeel;
+/** The one ModernLookAndFeel the app uses.
+
+    Constructed on first call rather than at file scope. A LookAndFeel built
+    during static initialisation races JUCE's own static Colours, which JUCE
+    asserts on in a debug build ("you're using a static LookAndFeel object");
+    in a release build the assertion is gone but the ordering is still
+    undefined. A function-local static is constructed after main() has started
+    and destroyed after shutdown() has already dropped the components that
+    refer to it.
+*/
+static ModernLookAndFeel& getModernLookAndFeel()
+{
+    static ModernLookAndFeel instance;
+    return instance;
+}
 
 MainComponent::MainComponent() : tuner(&deviceManager), tunerDisplay(&tuner), display(&tuner)
 {
     // Apply modern look and feel
-    LookAndFeel::setDefaultLookAndFeel(&modernLookAndFeel);
+    LookAndFeel::setDefaultLookAndFeel(&getModernLookAndFeel());
 
     std::unique_ptr<XmlElement> savedAudioState (getAppProperties().getUserSettings()
                                                ->getXmlValue ("audioDeviceState"));
@@ -482,8 +495,12 @@ void MainComponent::tunerFinished()
         tuner.toggleState();
 }
 
-void MainComponent::measurementFailed (int /*midiPitch*/, vcotuner::MeasurementError /*reason*/)
+void MainComponent::measurementFailed (int /*midiPitch*/, vcotuner::MeasurementError reason)
 {
+    // Used only by the assertion below, which compiles away in a release
+    // build -- hence the explicit ignore rather than a commented-out name.
+    ignoreUnused (reason);
+
     // Per-note failures are never fatal - only the reasons that abort the
     // whole sweep (routed through tunerStopped instead) are.
     jassert (! vcotuner::isFatal (reason));

@@ -13,6 +13,15 @@
 
 set -uo pipefail
 
+# This machine's shell profile exports an ARM cross-toolchain globally --
+# CC/CXX pointing at arm-none-eabi-gcc, and C_INCLUDE_PATH / CPLUS_INCLUDE_PATH
+# / LIBRARY_PATH pointing into arm-none-eabi-newlib. Those leak into any native
+# build started from that shell: CC/CXX is what makes a plain `cmake -B build`
+# fail here with "unrecognized command-line option '-arch'", and the include
+# paths put newlib headers ahead of the system ones for every compile. Clear
+# them so a harness run means the same thing wherever it is started from.
+unset CC CXX CROSS_COMPILE C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH LD_LIBRARY_PATH
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$ROOT/build-harness"
 ARTIFACTS="$ROOT/build-harness/artifacts"
@@ -192,6 +201,16 @@ if [ -x "$BUILD/tests/VCOTunerTests" ]; then
   fi
 else
   gate "unit-tests" SKIP "tests were not built"
+fi
+
+if [ -x "$BUILD/tests/VCOTunerRealtimeCheck" ]; then
+  if RT_OUT=$("$BUILD/tests/VCOTunerRealtimeCheck" 2>&1); then
+    gate "no-audio-thread-allocation" PASS "$(echo "$RT_OUT" | tail -1)"
+  else
+    gate "no-audio-thread-allocation" FAIL "$(echo "$RT_OUT" | tail -1)"
+  fi
+else
+  gate "no-audio-thread-allocation" SKIP "check was not built"
 fi
 
 ###############################################################################

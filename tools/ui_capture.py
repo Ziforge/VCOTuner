@@ -25,11 +25,23 @@ def windows():
     return [w for w in wl if 'VCOTuner' in str(w.get('kCGWindowOwnerName', ''))]
 
 
-def main_window(timeout=20):
-    deadline = time.time() + timeout
+def main_window(timeout=90):
+    """Wait for the app's window.
+
+    Generous, and it reports how long it waited. The bundle lives on an
+    external disk and the harness ad-hoc signs it immediately before this
+    runs, so the first launch after a full rebuild spends a long time in
+    Gatekeeper validating every file in it -- long enough that a 20 second
+    limit failed the gate while the app was still coming up.
+    """
+    start = time.time()
+    deadline = start + timeout
     while time.time() < deadline:
         ws = windows()
         if ws:
+            waited = time.time() - start
+            if waited > 5:
+                print(f"  (window took {waited:.0f}s to appear)")
             return max(ws, key=lambda w: w['kCGWindowBounds']['Height'])
         time.sleep(0.5)
     return None
