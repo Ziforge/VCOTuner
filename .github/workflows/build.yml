@@ -193,6 +193,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y g++ libfreetype6-dev libfontconfig1-dev libx11-dev libxinerama-dev libxrandr-dev libxcursor-dev mesa-common-dev libasound2-dev freeglut3-dev libxcomposite-dev libcurl4-openssl-dev libwebkit2gtk-4.1-dev
 
+    # Conflict markers, raw non-ASCII literals, JUCE-7 APIs, and the two
+    # regression guards (tab overlay, CV before the audio callback's early
+    # returns). See tools/debug_harness.sh.
+    - name: Static gates
+      run: ./tools/debug_harness.sh --static-only
+
+    - name: Prove the guards can fail
+      run: python3 tools/harness_selftest.py
+
     - name: Configure CMake
       run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DVCOTUNER_BUILD_TESTS=ON
 

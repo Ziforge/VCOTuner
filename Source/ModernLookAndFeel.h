@@ -261,8 +261,13 @@ public:
 
     void drawTabAreaBehindFrontButton(TabbedButtonBar& bar, Graphics& g, int w, int h) override
     {
-        g.setColour(Colors::background);
-        g.fillRect(0, 0, w, h);
+        ignoreUnused(bar);
+
+        // JUCE paints this into a full-size child of the tab bar that sits
+        // directly behind the FRONT tab button and therefore in front of every
+        // other one (TabbedButtonBar::BehindFrontTabComp, toBehind(frontTab)).
+        // Filling it opaquely painted over every inactive tab, leaving only the
+        // selected tab visible. Draw the separator and nothing else.
         g.setColour(Colors::panelLight.withAlpha(0.3f));
         g.drawLine(0, (float)h - 1, (float)w, (float)h - 1);
     }

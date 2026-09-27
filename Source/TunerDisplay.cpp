@@ -158,9 +158,13 @@ void TunerDisplay::paint(Graphics& g)
                      hasSignal ? ((semitones >= 0 ? "+" : "") + String(semitones, 4)) : "+-.----");
 
     // Deviation (if available from measurement)
+    // A bare "±" in a narrow literal reaches JUCE as two Latin-1 bytes and
+    // renders as "Â±". Build the glyph from UTF-8 explicitly.
+    const String plusMinus (CharPointer_UTF8 ("\xc2\xb1"));
     auto dataCol3 = dataSection.removeFromLeft(dataColWidth);
     drawSmallDataBox(g, dataCol3.reduced(3), "DEVIATION",
-                     hasSignal ? ("±" + String(currentDeviation * 100.0f, 2) + "c") : "±--.--c");
+                     hasSignal ? (plusMinus + String(currentDeviation * 100.0f, 2) + "c")
+                               : (plusMinus + "--.--c"));
 
     // Period (1/f)
     auto dataCol4 = dataSection;
