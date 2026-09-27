@@ -68,6 +68,10 @@ public:
         double freqDeviation;
         double pitchDeviation;
         int numMeasurements;
+        // Crossings the fit had to discard for this note -- a dropout, or a
+        // trigger that fired on something that was not a cycle boundary. The
+        // reading is still correct; this says it needed repairing to get there.
+        int rejectedCrossings;
         Time timestamp;
     } measurement_t;
     

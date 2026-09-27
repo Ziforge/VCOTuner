@@ -322,6 +322,7 @@ void VCOTuner::timerCallback()
                 m.freqDeviation = result.frequencyDeviation;
                 m.pitchDeviation = result.pitchDeviation;
                 m.numMeasurements = detector.numValidPeriods();
+                m.rejectedCrossings = result.rejectedCrossings;
                 listeners.call(&Listener::newMeasurementReady, m);
                 
                 // prepare next measurement

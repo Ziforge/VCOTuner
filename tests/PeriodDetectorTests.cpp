@@ -1,6 +1,7 @@
 // tests/PeriodDetectorTests.cpp
 #include <catch2/catch_test_macros.hpp>
 #include "dsp/PeriodDetector.h"
+#include "dsp/MeasurementStatistics.h"
 
 using namespace vcotuner;
 
@@ -395,15 +396,17 @@ TEST_CASE ("every shipped pitch and resolution reaches stable")
 
 #include "dsp/MeasurementError.h"
 
-TEST_CASE ("one click fails the note instead of being absorbed into the fit")
+TEST_CASE ("one click is repaired rather than failing the note")
 {
-    // This is a deliberate consequence of re-validating steadiness over the
-    // whole valid set rather than a single window, written down here so it is
-    // a specification rather than a surprise: a capture containing one glitch
-    // is failed and marked, not silently folded into the fit's error bars,
-    // where it would produce a wrong frequency carrying a plausible-looking
-    // uncertainty. The note is reported through the non-fatal highJitter
-    // error, so the sweep carries on past it (asserted at the bottom).
+    // This used to be specified the other way round: any capture containing a
+    // glitch was failed, on the grounds that folding it into the fit would
+    // produce a wrong frequency carrying a plausible-looking uncertainty.
+    // That reasoning holds only for a fit that absorbs the bad crossing.
+    // fitPeriod() now numbers crossings by counting cycles, so the crossing a
+    // click inserts is identified and dropped instead of shifting the cycle
+    // number of everything after it. The frequency that comes out is the
+    // correct one, and the repair is reported rather than hidden -- so the
+    // note is now measured, and the sweep no longer loses it.
     PeriodDetectorConfig cfg;
     cfg.warmupSamples   = 480;
     cfg.requiredPeriods = 400;
@@ -411,13 +414,17 @@ TEST_CASE ("one click fails the note instead of being absorbed into the fit")
     const double freq = 440.0, sampleRate = 48000.0;
     const int numSamples = 60000;   // ~545 periods; maxPeriods (600) is not hit
 
-    // Control: the same signal without the click is stable.
+    // Control: the same signal without the click is stable and clean.
     {
         const auto clean = makeSine (freq, sampleRate, numSamples, 0.9, 0.0);
         PeriodDetector detector;
         detector.reset (cfg);
         detector.processBlock (clean.data(), numSamples);
         REQUIRE (detector.status() == DetectorStatus::stable);
+
+        const auto fit = fitPeriod (detector.validPeriods(), detector.numValidPeriods());
+        REQUIRE (fit.valid);
+        REQUIRE (fit.rejectedCrossings == 0);
     }
 
     auto samples = makeSine (freq, sampleRate, numSamples, 0.9, 0.0);
@@ -435,10 +442,57 @@ TEST_CASE ("one click fails the note instead of being absorbed into the fit")
     detector.reset (cfg);
     detector.processBlock (samples.data(), numSamples);
 
-    INFO ("clickAt=" << clickAt << " numPeriods=" << detector.numPeriods());
-    REQUIRE (detector.status() == DetectorStatus::failedUnstable);
+    INFO ("clickAt=" << clickAt << " numPeriods=" << detector.numPeriods()
+          << " outliers=" << detector.numOutliers());
+    REQUIRE (detector.status() == DetectorStatus::stable);
 
-    // VCOTuner maps failedUnstable onto highJitter, which is not fatal: the
-    // note is recorded and the sweep moves on to the next one.
-    REQUIRE_FALSE (isFatal (MeasurementError::highJitter));
+    const auto result = computeMeasurement (detector.validPeriods(),
+                                            detector.numValidPeriods(),
+                                            sampleRate, freq, 69);
+    REQUIRE (result.valid);
+
+    // The whole point: the surviving measurement is right, not merely present.
+    // A tenth of a cent is far tighter than the tens of cents the unrepaired
+    // fit would have been off by.
+    REQUIRE (result.frequency == Approx (freq).epsilon (1e-4));
+    REQUIRE (std::abs (result.pitch - 69.0) < 0.001);
+
+    // And the repair is visible to the caller rather than silent.
+    REQUIRE (result.rejectedCrossings > 0);
+}
+
+TEST_CASE ("sustained jitter still fails, and is not mistaken for a glitch")
+{
+    // The allowance added for dropouts must not quietly accept a signal that
+    // is genuinely not holding a pitch. A dropout costs one or two periods out
+    // of hundreds; a wobbling oscillator puts most of them off the median, so
+    // the count lands far above the allowance and the note still fails.
+    PeriodDetectorConfig cfg;
+    cfg.warmupSamples   = 480;
+    cfg.requiredPeriods = 100;
+
+    const double sampleRate = 48000.0;
+    const int numSamples = 40000;
+
+    // A sine whose frequency swings between 400 and 480 Hz every 200 samples.
+    // Integrating the frequency keeps the phase continuous, so the only thing
+    // wrong with the signal is the period length -- there are no edges or
+    // discontinuities for the trigger to catch instead.
+    std::vector<float> samples ((size_t) numSamples);
+    double phase = 0.0;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const double freq = ((i / 200) % 2 == 0) ? 400.0 : 480.0;
+        samples[(size_t) i] = (float) (0.9 * std::sin (phase));
+        phase += 2.0 * kPi * freq / sampleRate;
+    }
+
+    PeriodDetector detector;
+    detector.reset (cfg);
+    detector.processBlock (samples.data(), numSamples);
+
+    INFO ("status=" << (int) detector.status()
+          << " periods=" << detector.numPeriods()
+          << " outliers=" << detector.numOutliers());
+    REQUIRE (detector.status() != DetectorStatus::stable);
 }

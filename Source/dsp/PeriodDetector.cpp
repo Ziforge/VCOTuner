@@ -1,5 +1,7 @@
 // Source/dsp/PeriodDetector.cpp
 #include "PeriodDetector.h"
+
+#include <algorithm>
 #include <cmath>
 
 namespace vcotuner
@@ -37,7 +39,10 @@ namespace
 void PeriodDetector::prepare (int maxPeriods)
 {
     if (maxPeriods > 0)
+    {
         periods.reserve ((size_t) maxPeriods);
+        scratch.reserve ((size_t) maxPeriods);
+    }
 }
 
 void PeriodDetector::reset (const PeriodDetectorConfig& config)
@@ -54,6 +59,8 @@ void PeriodDetector::reset (const PeriodDetectorConfig& config)
 
     periods.clear();
     periods.reserve ((size_t) config.maxPeriods);
+    scratch.reserve ((size_t) config.maxPeriods);
+    outlierCount = 0;
     lastCrossing    = -1.0;
     lastSample      = 0.0;
     armed           = false;
@@ -163,6 +170,35 @@ const double* PeriodDetector::validPeriods() const noexcept
     return periods.data() + firstValidIndex;
 }
 
+int PeriodDetector::countOutliers (const double* values, int count)
+{
+    if (values == nullptr || count <= 0)
+        return 0;
+
+    // assign() over a vector whose capacity was reserved in reset() reuses the
+    // existing storage, so this does not allocate on the audio thread.
+    scratch.assign (values, values + count);
+
+    const size_t mid = scratch.size() / 2;
+    std::nth_element (scratch.begin(), scratch.begin() + (long) mid, scratch.end());
+    double median = scratch[mid];
+
+    if (scratch.size() % 2 == 0)
+        median = 0.5 * (*std::max_element (scratch.begin(), scratch.begin() + (long) mid) + median);
+
+    if (! (median > 0.0))
+        return count;
+
+    const double boundary = median * cfg.stabilityTolerance;
+
+    int outliers = 0;
+    for (int i = 0; i < count; ++i)
+        if (std::abs (values[i] - median) >= boundary)
+            ++outliers;
+
+    return outliers;
+}
+
 void PeriodDetector::updateStability()
 {
     const int n = (int) periods.size();
@@ -181,9 +217,21 @@ void PeriodDetector::updateStability()
         // Re-check the whole collected set before declaring success: a drifting
         // oscillator can satisfy a single window and then wander far outside
         // tolerance, which is exactly what failedUnstable is for.
-        currentStatus = isWithinTolerance (validPeriods(),
-                                           numValidPeriods(),
-                                           cfg.stabilityTolerance)
+        //
+        // The check counts how many periods sit off the grid rather than
+        // demanding that none do. A dropout inserts or drops a single crossing
+        // and so spoils at most two periods out of however many were collected,
+        // and failing the note for that discards a measurement the fit can
+        // repair exactly. Sustained jitter spoils a large share of them and
+        // still fails here. The comparison is against the median, not the mean:
+        // an outlier drags the mean towards itself and can hide behind it.
+        const int valid = numValidPeriods();
+        outlierCount = countOutliers (validPeriods(), valid);
+
+        const int allowed = std::max (cfg.minOutliersAllowed,
+                                      (int) (cfg.maxOutlierFraction * valid));
+
+        currentStatus = (outlierCount <= allowed)
                       ? DetectorStatus::stable
                       : DetectorStatus::failedUnstable;
         return;

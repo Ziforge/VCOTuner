@@ -159,3 +159,95 @@ TEST_CASE ("measurement propagates a nonzero deviation using the exact formulas"
     // pitchDeviation = 12 * relative:
     REQUIRE (result.pitchDeviation != Approx (12.0 * (std::sqrt (2.0 / 15.0) / 10.0)));
 }
+
+//==============================================================================
+// Robustness of the fit to bad crossings.
+//
+// These use exact synthetic period sequences rather than synthesised audio, so
+// what is being tested is the estimator itself and not the trigger in front of
+// it.
+
+TEST_CASE ("a spurious crossing is dropped and the period is unchanged")
+{
+    // A click splits one period into two halves: the crossing between them is
+    // not a real cycle boundary. Numbering crossings by position would put
+    // every later crossing one cycle ahead of the truth and bend the line;
+    // counting cycles recovers it.
+    std::vector<double> periods (40, 100.0);
+    periods[20] = 30.0;
+    periods.insert (periods.begin() + 21, 70.0);   // 30 + 70 == one period
+
+    const auto fit = fitPeriod (periods.data(), (int) periods.size());
+
+    REQUIRE (fit.valid);
+    REQUIRE (fit.periodSamples == Approx (100.0).epsilon (1e-9));
+    REQUIRE (fit.rejectedCrossings == 1);
+}
+
+TEST_CASE ("a missed crossing is spanned rather than rejected")
+{
+    // A trigger that misses one crossing leaves a gap of exactly two periods.
+    // That is a whole number of cycles, so the crossing after it is still on
+    // the grid: nothing needs rejecting, the cycle count simply advances by
+    // two. Treating it as an outlier instead would throw away a good crossing.
+    std::vector<double> periods (40, 100.0);
+    periods[20] = 200.0;
+    periods.erase (periods.begin() + 21);
+
+    const auto fit = fitPeriod (periods.data(), (int) periods.size());
+
+    REQUIRE (fit.valid);
+    REQUIRE (fit.periodSamples == Approx (100.0).epsilon (1e-9));
+    REQUIRE (fit.rejectedCrossings == 0);
+}
+
+TEST_CASE ("the unrepaired fit would have been badly wrong")
+{
+    // Guards the claim the repair rests on. With a spurious crossing present,
+    // numbering crossings by position -- one cycle each -- pulls the slope far
+    // enough off that the reading would be wrong by well over a cent while
+    // still carrying a modest-looking error bar. The check here is that the
+    // repaired slope and that naive slope really do differ.
+    std::vector<double> periods (40, 100.0);
+    periods[20] = 30.0;
+    periods.insert (periods.begin() + 21, 70.0);
+
+    double sum = 0.0;
+    for (double p : periods) sum += p;
+    const double naiveSlope = sum / (double) periods.size();   // mean period
+
+    const auto fit = fitPeriod (periods.data(), (int) periods.size());
+
+    REQUIRE (fit.periodSamples == Approx (100.0).epsilon (1e-9));
+    REQUIRE (std::abs (naiveSlope - 100.0) > 1.0);
+
+    // 1.2 samples at a 100-sample period is ~20 cents: not a rounding detail.
+    const double centsOff = 1200.0 * std::log2 (100.0 / naiveSlope);
+    REQUIRE (std::abs (centsOff) > 10.0);
+}
+
+TEST_CASE ("a clean sequence rejects nothing and reports what it used")
+{
+    const std::vector<double> periods (30, 250.0);
+    const auto fit = fitPeriod (periods.data(), (int) periods.size());
+
+    REQUIRE (fit.valid);
+    REQUIRE (fit.rejectedCrossings == 0);
+    REQUIRE (fit.usedCrossings == (int) periods.size() + 1);
+}
+
+TEST_CASE ("rejection does not destroy the uncertainty estimate")
+{
+    // A repaired fit must still report an honest error bar: dropping a
+    // crossing removes a point but must not leave the standard error at zero,
+    // which would claim more confidence than the data supports.
+    std::vector<double> periods { 100.0, 101.0, 99.0, 100.0, 30.0, 70.0,
+                                  101.0, 99.0, 100.0, 100.0, 101.0 };
+    const auto fit = fitPeriod (periods.data(), (int) periods.size());
+
+    REQUIRE (fit.valid);
+    REQUIRE (fit.rejectedCrossings == 1);
+    REQUIRE (fit.periodSamples == Approx (100.0).epsilon (0.01));
+    REQUIRE (fit.periodStdError > 0.0);
+    REQUIRE (std::isfinite (fit.periodStdError));
+}

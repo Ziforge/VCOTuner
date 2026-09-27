@@ -254,6 +254,17 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
         g.setColour(barColor.withAlpha(0.3f));
         g.fillRoundedRectangle(barCenter - barWidth / 2 - 2, yFlip(barTop + barHeight) - 2,
                                barWidth + 4, barHeight + 4, 3.0f);
+
+        // A note whose fit had to discard a crossing reads correctly but came
+        // from a capture with a dropout in it. Mark it, so a column that
+        // needed repairing is not presented as indistinguishable from a clean
+        // one -- if these cluster, the audio path is the thing to look at.
+        if (measurements[i].rejectedCrossings > 0)
+        {
+            const float dot = jmin (5.0f, barWidth * 0.4f);
+            g.setColour(ModernLookAndFeel::Colors::warning);
+            g.fillEllipse(barCenter - dot / 2.0f, chartTop + 3.0f, dot, dot);
+        }
     }
 
     // Draw the X-Axis label

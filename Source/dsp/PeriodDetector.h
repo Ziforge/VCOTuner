@@ -16,6 +16,21 @@ struct PeriodDetectorConfig
     int    warmupSamples      = 2048;   // level-tracking window
     double silenceFloor       = 1e-4;   // amplitude below this => silent
     int    requiredPeriods    = 10;     // valid periods needed for 'stable'
+
+    /** Share of the collected periods allowed to sit off the cycle grid before
+        the note is called unstable. A dropout inserts or removes one crossing
+        and so disturbs at most two periods; a genuinely jittery oscillator
+        disturbs a large fraction of them. Tolerating a bounded few is what
+        separates "one click" from "this is not a steady pitch", and the fit
+        in MeasurementStatistics then excludes them rather than absorbing them.
+    */
+    double maxOutlierFraction = 0.02;
+
+    /** Outliers always tolerated regardless of fraction. One dropout costs two
+        periods, so a lower allowance than this would fail short captures for
+        the single glitch this is meant to survive.
+    */
+    int    minOutliersAllowed = 2;
 };
 
 enum class DetectorStatus
@@ -54,11 +69,17 @@ public:
     int numValidPeriods() const noexcept;
     const double* validPeriods() const noexcept;
 
+    /** Periods judged off-grid by the last stability check. Zero until the
+        check has run.
+    */
+    int numOutliers() const noexcept { return outlierCount; }
+
 private:
     void finishWarmup();
     void processCrossing (double s);
     void recordCrossing (double position);
     void updateStability();
+    int  countOutliers (const double* values, int count);
 
     PeriodDetectorConfig cfg {};
     DetectorStatus currentStatus = DetectorStatus::collecting;
@@ -72,6 +93,11 @@ private:
     bool      haveLevel      = false;
 
     std::vector<double> periods;
+
+    // Scratch for the median in countOutliers(). Sized with periods so the
+    // audio thread never allocates: nth_element needs to reorder a copy.
+    std::vector<double> scratch;
+    int outlierCount = 0;
     double lastCrossing   = -1.0;
     double lastSample     =  0.0;
     bool   armed          = false;
