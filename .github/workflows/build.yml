@@ -206,7 +206,7 @@ jobs:
       run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DVCOTUNER_BUILD_TESTS=ON
 
     - name: Build tests
-      run: cmake --build build --target VCOTunerTests
+      run: cmake --build build --target vcotuner_all_tests
 
     - name: Run tests
       run: ctest --test-dir build --output-on-failure

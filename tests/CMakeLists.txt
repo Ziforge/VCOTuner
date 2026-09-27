@@ -25,3 +25,10 @@ catch_discover_tests(VCOTunerTests DISCOVERY_MODE PRE_TEST)
 add_executable(VCOTunerRealtimeCheck RealtimeAllocationCheck.cpp)
 target_link_libraries(VCOTunerRealtimeCheck PRIVATE vcotuner_dsp)
 add_test(NAME realtime-allocation COMMAND VCOTunerRealtimeCheck)
+
+# One target for everything ctest will try to run. CI builds this rather than
+# naming each executable: a test registered with add_test() but never built
+# reports "Not Run" and fails the suite, and the workflow should not have to be
+# edited every time a target is added here.
+add_custom_target(vcotuner_all_tests
+    DEPENDS VCOTunerTests VCOTunerRealtimeCheck)
