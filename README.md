@@ -8,24 +8,53 @@ A JUCE-based precision tuner for VCOs, VCFs and other analog gear. Runs on Windo
 
 ![VCOTuner Screenshot](docs/screenshot.png)
 
+## Status: work in progress, not yet validated on hardware
+
+**None of what this fork adds has been checked against a real oscillator yet.**
+The MIDI-driven tuner underneath is the original application and has been used
+for years; everything listed below it is new here. It builds on macOS, Windows
+and Linux in CI and passes its own test suite, but a passing test is not a tuned
+VCO. Treat the new parts as unproven until they have been used on hardware —
+including by me.
+
+| | state |
+|---|---|
+| CV output driving a sweep | **never driven a real oscillator.** Implemented, and exercised end to end in software only |
+| Sample-rate calibration | measured against a real audio interface (−5.8 ppm on the development machine); its effect on tuning accuracy is unverified against a known reference |
+| Dropout repair, trigger-level tracking | verified against synthetic signals in the test suite; not yet seen a real drifting VCO |
+| macOS build | run on real hardware |
+| Windows and Linux builds | compile in CI, never run at all |
+
+The CV settling allowance is 100 ms, inherited from the MIDI-to-CV path. If CV
+tracking reads consistently flat or sharp at the start of each note, that is the
+first number to change.
+
+Reports from anyone who does patch it to hardware are very welcome.
+
 ## Features
 
+- **CV output** - drives the oscillator directly from a DC-coupled audio output, so no MIDI-to-CV interface sits in the measurement chain *(untested on hardware — see Status)*
+- **CV calibration** - 1V/oct and Hz/V, Expert Sleepers and MOTU presets, with export to CSV, JSON and Ornament & Crime *(untested on hardware)*
+- **Sample-rate calibration** - measures the converter's true rate, so absolute frequency readings are not out by the interface's ppm error
 - **Scientific Tuner Display** - High-precision frequency measurement with Hz and cents error display
 - **Tabbed Interface** - Separate Tuner and Chart views
 - **Pitch Tracking** - Real-time frequency detection with deviation meter
 - **Tuning Reports** - Export measurements as PNG with device info
 
-This is a fork of [TheSlowGrowth/VCOTuner](https://github.com/TheSlowGrowth/VCOTuner) updated for modern macOS compatibility.
-
 ## How It Works
 
 Traditional VCO tuning requires constant back-and-forth between fine tune and trimmer adjustments. VCOTuner eliminates this by:
 
-1. Outputting MIDI notes across a selectable range
-2. Measuring the actual frequency for each note
-3. Using a center reference pitch so you can focus solely on trimmer adjustments
+1. Playing a series of pitches across a selectable range
+2. Measuring the actual frequency for each one
+3. Using a centre reference pitch so you can focus solely on trimmer adjustments
 
 Tuning takes minutes instead of hours.
+
+The pitch can come from either source, selectable in the main window:
+
+- **MIDI out** — sends MIDI notes for an external MIDI-to-CV interface to convert. This is how the original works, and the path that has actually been used on hardware.
+- **CV output** — sets a voltage on a DC-coupled audio output directly. This removes a second converter, with its own scaling error, from the measurement chain. **Not yet tested against a real oscillator.**
 
 ## What's new
 
