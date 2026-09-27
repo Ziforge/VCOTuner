@@ -15,6 +15,7 @@ TAB_OK = ('        g.setColour(Colors::panelLight.withAlpha(0.3f));\n'
           '        g.drawLine(0, (float)h - 1, (float)w, (float)h - 1);\n    }')
 FONT_OK = 'GlyphArrangement::getStringWidth(g.getCurrentFont(), String(measurements[i].midiPitch))'
 CV_OK = '            cvOutputManager->fillOutputBuffer(outputChannelData[0], numSamples);'
+CLOCK_OK = 'fitFrequency(detector, effectiveSampleRate(),'
 
 CASES = [
     ('no-raw-utf8-literals', 'Source/TunerDisplay.cpp',
@@ -25,6 +26,8 @@ CASES = [
      FONT_OK, 'g.getCurrentFont().getStringWidth(String(measurements[i].midiPitch))'),
     ('cv-before-early-returns', 'Source/VCOTuner.cpp',
      CV_OK, '            /* moved below the early returns */'),
+    ('frequency-uses-corrected-clock', 'Source/VCOTuner.cpp',
+     CLOCK_OK, 'fitFrequency(detector, sampleRate,'),
 ]
 
 

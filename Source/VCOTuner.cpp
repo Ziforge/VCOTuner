@@ -214,7 +214,7 @@ void VCOTuner::timerCallback()
                 }
                 
                 double frequency = 0.0, deviation = 0.0;
-                if (!fitFrequency(detector, sampleRate, frequency, deviation))
+                if (!fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
                     errors.add(Errors::highJitter);
                     switchState(stopped);
@@ -285,7 +285,7 @@ void VCOTuner::timerCallback()
                 
                 const auto result = vcotuner::computeMeasurement(detector.validPeriods(),
                                                                  detector.numValidPeriods(),
-                                                                 sampleRate,
+                                                                 effectiveSampleRate(),
                                                                  referenceFrequency,
                                                                  referencePitch);
                 if (!result.valid)
@@ -373,7 +373,7 @@ void VCOTuner::timerCallback()
                 // mode runs until the user stops it, so there is nobody to tell.
                 double frequency = 0.0, deviation = 0.0;
                 if (lastDetectorStatus() == vcotuner::DetectorStatus::stable
-                    && fitFrequency(detector, sampleRate, frequency, deviation))
+                    && fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
                     continuousFreqMeasurementResult = frequency;
                     continuousFreqMeasurementDeviation = deviation;
@@ -428,7 +428,7 @@ void VCOTuner::timerCallback()
                 }
                 
                 double frequency = 0.0, deviation = 0.0;
-                if (!fitFrequency(detector, sampleRate, frequency, deviation))
+                if (!fitFrequency(detector, effectiveSampleRate(), frequency, deviation))
                 {
                     errors.add(Errors::highJitter);
                     switchState(stopped);
@@ -648,7 +648,7 @@ void VCOTuner::audioDeviceIOCallbackWithContext (const float* const* inputChanne
                                     float* const* outputChannelData,
                                     int numOutputChannels,
                                     int numSamples,
-                                    const AudioIODeviceCallbackContext&)
+                                    const AudioIODeviceCallbackContext& context)
 {
     // CV output has to be serviced on every callback, not only while a
     // measurement is running: the voltage is what holds the oscillator at
@@ -669,6 +669,19 @@ void VCOTuner::audioDeviceIOCallbackWithContext (const float* const* inputChanne
         for (int channel = firstChannelToClear; channel < numOutputChannels; channel++)
             if (outputChannelData[channel] != nullptr)
                 FloatVectorOperations::clear(outputChannelData[channel], numSamples);
+    }
+
+    // Fed on every callback, ahead of the early returns: the converter's clock
+    // runs whether or not a note is being measured, and the estimate is only
+    // as good as the baseline it was taken over.
+    clockCalibrator.addBlock (numSamples, context.hostTimeNs);
+
+    if (++clockPublishCounter >= 64)
+    {
+        clockPublishCounter = 0;
+        const auto e = clockCalibrator.estimate();
+        measuredSampleRate.store (e.valid ? e.sampleRateHz : 0.0, std::memory_order_relaxed);
+        clockPpm.store (e.valid ? e.ppmOffset : 0.0, std::memory_order_relaxed);
     }
 
     if (stopMeasurement)
@@ -740,6 +753,14 @@ void VCOTuner::switchState(VCOTuner::State newState)
 void VCOTuner::audioDeviceAboutToStart (AudioIODevice* device)
 {
     sampleRate = device->getCurrentSampleRate();
+
+    // A new device is a new clock: nothing measured about the old one carries
+    // over, and applying its correction here would be worse than not
+    // correcting at all.
+    clockCalibrator.reset (sampleRate);
+    measuredSampleRate.store (0.0, std::memory_order_relaxed);
+    clockPpm.store (0.0, std::memory_order_relaxed);
+    clockPublishCounter = 0;
 }
 
 /** inherited from AudioIODeviceCallback */

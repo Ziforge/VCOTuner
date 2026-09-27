@@ -15,6 +15,7 @@
 
 #include "dsp/MeasurementError.h"
 #include "dsp/MeasurementStatistics.h"
+#include "dsp/ClockCalibrator.h"
 #include "dsp/PeriodDetector.h"
 
 #include <atomic>
@@ -126,11 +127,41 @@ public:
     void removeListener(Listener* l);
 
     // CV Output integration
+    /** The converter's measured rate where one is available, the rate the
+        device reports otherwise. Every conversion from a period in samples to
+        a frequency in Hz goes through this rather than the nominal rate: a
+        converter out by 100 ppm puts every absolute reading out by 0.17
+        cents, and that error is systematic, so a longer measurement does not
+        reduce it. See ClockCalibrator.
+    */
+    double effectiveSampleRate() const noexcept
+    {
+        const double measured = measuredSampleRate.load (std::memory_order_relaxed);
+        return (measured > 0.0) ? measured : sampleRate;
+    }
+
+    /** Offset of the measured rate from nominal in ppm, or 0 when no estimate
+        is available. For display: a reading is worth qualifying if the clock
+        it came from had to be corrected.
+    */
+    double clockOffsetPpm() const noexcept
+    {
+        return clockPpm.load (std::memory_order_relaxed);
+    }
+
     void setCVOutputManager(CVOutputManager* manager) { cvOutputManager = manager; }
     CVOutputManager* getCVOutputManager() { return cvOutputManager; }
 
 private:
     CVOutputManager* cvOutputManager = nullptr;
+
+    // Written on the audio thread, read on the message thread. The calibrator's
+    // running sums stay private to the audio thread and only the finished
+    // estimate is published, so the reader never sees them mid-update.
+    vcotuner::ClockCalibrator clockCalibrator;
+    std::atomic<double> measuredSampleRate { 0.0 };   // 0 == no estimate yet
+    std::atomic<double> clockPpm { 0.0 };
+    int clockPublishCounter = 0;
     // states for the state machine
     enum State
     {

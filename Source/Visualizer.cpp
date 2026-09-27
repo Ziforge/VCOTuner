@@ -390,7 +390,18 @@ void Visualizer::drawTopInfoPanel(Graphics& g, int width, int panelHeight)
 
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
     g.setFont(Font(12.0f));
-    g.drawText(String(current.frequency, 2) + " Hz", startX, topY + 42, sectionWidth, 16, Justification::left);
+
+    // Qualify the absolute frequency with the clock correction that produced
+    // it. This is the one number the correction moves -- the cents offsets are
+    // ratios against a reference measured through the same clock, so they were
+    // never affected by it -- and a reading is worth qualifying if the clock
+    // behind it had to be corrected.
+    String freqText = String(current.frequency, 2) + " Hz";
+    const double ppm = (tuner != nullptr) ? tuner->clockOffsetPpm() : 0.0;
+    if (std::abs(ppm) >= 0.5)
+        freqText += (ppm > 0 ? "  clk +" : "  clk ") + String(ppm, 0) + "ppm";
+
+    g.drawText(freqText, startX, topY + 42, sectionWidth, 16, Justification::left);
 
     // Section 2: Current Error (cents)
     startX += sectionWidth;

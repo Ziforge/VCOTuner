@@ -91,6 +91,17 @@ else
   gate "cv-before-early-returns" FAIL "CV fill@$CV_LINE is after return@$RET_LINE"
 fi
 
+# Every conversion from a period in samples to a frequency in Hz must go
+# through the measured clock, not the rate the device claims. Reverting one of
+# these reintroduces a systematic error no amount of averaging removes.
+NOMINAL_USE=$(grep -n 'fitFrequency(detector, sampleRate' "$ROOT/Source/VCOTuner.cpp" || true)
+NOMINAL_CM=$(awk '/computeMeasurement\(/,/\);/' "$ROOT/Source/VCOTuner.cpp" | grep -c '^ *sampleRate,' || true)
+if [ -n "$NOMINAL_USE" ] || [ "${NOMINAL_CM:-0}" -gt 0 ]; then
+  gate "frequency-uses-corrected-clock" FAIL "a conversion still divides by the nominal rate"
+else
+  gate "frequency-uses-corrected-clock" PASS
+fi
+
 # The JUCE submodule must match what the tree pins, or the build is not the
 # build the gates think they are testing.
 PINNED=$(git -C "$ROOT" ls-files -s deps/JUCE | awk '{print $2}')
