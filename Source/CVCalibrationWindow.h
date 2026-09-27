@@ -37,7 +37,6 @@ public:
 
 private:
     CVCalibrationWindow* parent;
-    CVOutputManager* cvOutput;
 
     Label titleLabel;
 
@@ -169,7 +168,6 @@ private:
 
     VCOTuner* tuner;
     CVOutputManager* cvOutput;
-    Visualizer* visualizer;
 
     std::unique_ptr<CalibrationEngine> engine;
     std::unique_ptr<Component> currentScreen;

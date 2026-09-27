@@ -88,12 +88,12 @@ void ReportPrepScreen::paint(Graphics& g)
     if (positionInBox > 1.0)
     {
         g.setColour(Colours::red);
-        g.drawText(">>", box.getRight() + 5, box.getY(), 40, box.getHeight(), juce::Justification::centredLeft);
+        g.drawText(">>", juce::Rectangle<float>(box.getRight() + 5, box.getY(), 40, box.getHeight()), juce::Justification::centredLeft);
     }
     else if (positionInBox < -1.0)
     {
         g.setColour(Colours::red);
-        g.drawText("<<", box.getX() - 45, box.getY(), 40, box.getHeight(), juce::Justification::centredRight);
+        g.drawText("<<", juce::Rectangle<float>(box.getX() - 45, box.getY(), 40, box.getHeight()), juce::Justification::centredRight);
     }
     else
     {
@@ -107,8 +107,8 @@ void ReportPrepScreen::paint(Graphics& g)
     g.drawText("more comparable by using the same pitch ranges.", box.translated(0, -90), juce::Justification::centred);
     g.drawText(String(currentFreq) + " Hz", box.translated(0, -box.getHeight()), juce::Justification::centred);
     
-    g.drawText("Measurements will start when the frequency error is below", 0, getHeight() - 80, getWidth(), 15, juce::Justification::centred);
-    g.drawText("+-" + String(ReportProperties::allowedDeviation) + " Hz for at least " + String((float) ReportProperties::requiredHoldTimeInMs / 1000.0f) + " seconds", 0, getHeight() - 65, getWidth(), 15, juce::Justification::centred);
+    g.drawText("Measurements will start when the frequency error is below", juce::Rectangle<float>(0, getHeight() - 80, getWidth(), 15), juce::Justification::centred);
+    g.drawText("+-" + String(ReportProperties::allowedDeviation) + " Hz for at least " + String((float) ReportProperties::requiredHoldTimeInMs / 1000.0f) + " seconds", juce::Rectangle<float>(0, getHeight() - 65, getWidth(), 15), juce::Justification::centred);
 }
 
 void ReportPrepScreen::tunerStopped()

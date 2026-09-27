@@ -92,7 +92,7 @@ VCOTuner::~VCOTuner()
     stopTimer();
     
     if (currentlyPlayingMidiNote >= 0)
-        trySendMidiNoteOff(currentlyPlayingMidiNote);
+        releasePitch(currentlyPlayingMidiNote);
     
     deviceManager->removeAudioCallback(this);
 }
@@ -129,6 +129,12 @@ void VCOTuner::toggleState()
 
 void VCOTuner::start()
 {
+    if (cvOutputUnavailable())
+    {
+        errors.add(Errors::cvOutputUnavailable);
+        return;
+    }
+
     if (!isRunning())
         switchState(prepRefMeasurement);
 }
@@ -177,7 +183,7 @@ void VCOTuner::timerCallback()
                 // send reference midi note
                 referencePitch = (highestPitch + lowestPitch) / 2;
                 currentPitch = referencePitch;
-                trySendMidiNoteOn(currentPitch);
+                playPitch(currentPitch);
             }
             else
             {
@@ -199,7 +205,7 @@ void VCOTuner::timerCallback()
             if (!startMeasurement)
             {
                 // send note off
-                trySendMidiNoteOff(currentPitch);
+                releasePitch(currentPitch);
                 
                 // A failed reference measurement is always fatal: every other
                 // note's pitch is expressed relative to this frequency, so
@@ -251,7 +257,7 @@ void VCOTuner::timerCallback()
             if (cycleCounter == 0)
             {
                 // send midi note
-                trySendMidiNoteOn(currentPitch);
+                playPitch(currentPitch);
             }
             else
             {
@@ -295,7 +301,7 @@ void VCOTuner::timerCallback()
                 }
                 
                 // send note off
-                trySendMidiNoteOff(currentPitch);
+                releasePitch(currentPitch);
                 
                 // check if the frequency has changed compared to the reference frequency
                 // if not, it is likely that the MIDI output is not working. This check runs
@@ -359,7 +365,7 @@ void VCOTuner::timerCallback()
                 break;
                 
             // send midi note and start measuring
-            trySendMidiNoteOn(continuousFrequencyMeasurementPitch);
+            playPitch(continuousFrequencyMeasurementPitch);
             startDetectorRun(continuousFrequencyMeasurementPitch);
             switchState(continuousFrequencyMeasurement);
             cycleCounter++;
@@ -394,7 +400,7 @@ void VCOTuner::timerCallback()
             if (cycleCounter == 0)
             {
                 // send midi note
-                trySendMidiNoteOn(singleMeasurementPitch);
+                playPitch(singleMeasurementPitch);
             }
             else
             {
@@ -416,7 +422,7 @@ void VCOTuner::timerCallback()
             if (!startMeasurement)
             {
                 // send note off
-                trySendMidiNoteOff(singleMeasurementPitch);
+                releasePitch(singleMeasurementPitch);
                 
                 const vcotuner::DetectorStatus status = lastDetectorStatus();
                 
@@ -468,8 +474,43 @@ void VCOTuner::startContinuousMeasurement(int pitch)
     state = prepareContinuousFrequencyMeasurement;
 }
 
-void VCOTuner::trySendMidiNoteOn(int pitch)
+void VCOTuner::setPitchSource (PitchSource source)
 {
+    if (source == pitchSource)
+        return;
+
+    // Leaving CV driving after switching to MIDI would have two things setting
+    // the pitch at once, so hand the oscillator back before changing over.
+    if (pitchSource == PitchSource::cvOutput && cvOutputManager != nullptr)
+        cvOutputManager->setActive(false);
+
+    pitchSource = source;
+}
+
+bool VCOTuner::cvOutputUnavailable() const noexcept
+{
+    return pitchSource == PitchSource::cvOutput
+        && (cvOutputManager == nullptr
+            || availableOutputChannels.load(std::memory_order_relaxed) <= 0);
+}
+
+void VCOTuner::playPitch(int pitch)
+{
+    if (pitchSource == PitchSource::cvOutput)
+    {
+        if (cvOutputManager == nullptr)
+        {
+            errors.add(Errors::cvOutputUnavailable);
+            switchState(stopped);
+            return;
+        }
+
+        cvOutputManager->setActive(true);
+        cvOutputManager->outputVoltage(cvOutputManager->midiToVoltage(pitch));
+        currentlyPlayingMidiNote = pitch;
+        return;
+    }
+
     MidiOutput* midiOut = deviceManager->getDefaultMidiOutput();
     if (midiOut == nullptr)
     {
@@ -479,14 +520,24 @@ void VCOTuner::trySendMidiNoteOn(int pitch)
     }
     
     if (currentlyPlayingMidiNote != -1)
-        trySendMidiNoteOff(currentlyPlayingMidiNote);
+        releasePitch(currentlyPlayingMidiNote);
     
     midiOut->sendMessageNow(MidiMessage::noteOn(midiChannel, pitch, (uint8_t) 100));
     currentlyPlayingMidiNote = pitch;
 }
 
-void VCOTuner::trySendMidiNoteOff(int pitch)
+void VCOTuner::releasePitch(int pitch)
 {
+    if (pitchSource == PitchSource::cvOutput)
+    {
+        // A pitch CV has no note-off: the voltage is the note. Holding it
+        // leaves the oscillator where it was, so the next pitch settles from
+        // a neighbouring voltage rather than from 0 V -- and an oscillator
+        // left sounding is what lets a trimmer be adjusted between sweeps.
+        currentlyPlayingMidiNote = -1;
+        return;
+    }
+
     MidiOutput* midiOut = deviceManager->getDefaultMidiOutput();
     if (midiOut == nullptr)
     {
@@ -539,7 +590,7 @@ bool VCOTuner::awaitingStopRequest()
 
 void VCOTuner::failCurrentNote(vcotuner::MeasurementError reason)
 {
-    trySendMidiNoteOff(currentPitch);
+    releasePitch(currentPitch);
     
     // Only cancel a run that is actually in flight - the timeout path. When the
     // detector finished on its own the audio thread has already cleared its own
@@ -548,7 +599,7 @@ void VCOTuner::failCurrentNote(vcotuner::MeasurementError reason)
     if (startMeasurement)
         stopMeasurement = true;
     
-    // trySendMidiNoteOff() stops the tuner when the MIDI device has gone away.
+    // releasePitch() stops the tuner when the MIDI device has gone away.
     // That is fatal, so do not resume the sweep on top of it.
     if (state == stopped)
         return;
@@ -656,6 +707,9 @@ void VCOTuner::audioDeviceIOCallbackWithContext (const float* const* inputChanne
     // between notes and after a sweep.
     // Channels that were not enabled when the device was opened are null, and
     // AudioBuffer::clear() would memset straight through them.
+    availableOutputChannels.store(outputChannelData != nullptr ? numOutputChannels : 0,
+                                  std::memory_order_relaxed);
+
     if (outputChannelData != nullptr)
     {
         const bool cvActive = cvOutputManager != nullptr && cvOutputManager->isActive();
@@ -703,7 +757,6 @@ void VCOTuner::audioDeviceIOCallbackWithContext (const float* const* inputChanne
     if (!initialized)
     {
         vcotuner::PeriodDetectorConfig cfg;
-        cfg.sampleRate      = sampleRate;
         cfg.requiredPeriods = numPeriodSamples;
         cfg.warmupSamples   = currentWarmupSamples;
         // cfg.maxPeriods must stay at the default the constructor reserved,
@@ -733,7 +786,7 @@ void VCOTuner::switchState(VCOTuner::State newState)
     if (state == stopped)
     {
         if (currentlyPlayingMidiNote >= 0 && currentlyPlayingMidiNote < 128)
-            trySendMidiNoteOff(currentlyPlayingMidiNote);
+            releasePitch(currentlyPlayingMidiNote);
         stopMeasurement = true;
         listeners.call(&Listener::tunerStopped);
     }
@@ -819,7 +872,8 @@ const String VCOTuner::Errors::bufferFull = "The signal did settle into a steady
 
 const String VCOTuner::Errors::stableTimeout = "The measurement did not finish in time. Either the incoming zero-crossings never settled into a steady rate, or the signal was too weak or intermittent for enough of them to arrive in the first place. Are you recording from the right oscillator, on the right channel, and is its level high enough?";
 
-const String VCOTuner::Errors::noFrequencyChangeBetweenMeasurements = "Apparently the frequency of the oscillator is not changing between measurements. Please check if your MIDI-to-CV interface is set to the correct MIDI channel and make sure that it is selected as the default midi output device in the audio and midi settings.";
+const String VCOTuner::Errors::noFrequencyChangeBetweenMeasurements = "Apparently the frequency of the oscillator is not changing between measurements. If the pitch source is MIDI, check that your MIDI-to-CV interface is set to the correct MIDI channel and is selected as the default MIDI output device in the audio and midi settings. If the pitch source is CV output, check that the audio interface output is DC-coupled and patched to the oscillator's pitch input.";
+const String VCOTuner::Errors::cvOutputUnavailable = "The pitch source is set to CV output, but there is no audio output to send it to. Open the audio settings and select an output device with at least one channel. The output must be DC-coupled: an AC-coupled output cannot carry a pitch voltage.";
 
 const String VCOTuner::Errors::noMidiDeviceAvailable = "You don't have a MIDI output device selected or the selected device is not available.";
 

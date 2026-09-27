@@ -18,13 +18,13 @@ class Visualizer: public Component,
 {
 public:
     Visualizer(VCOTuner* t);
-    ~Visualizer();
+    ~Visualizer() override;
     
     void paintWithFixedScaling(Graphics& g, int width, int height, double min, double max);
     void paint(Graphics& g, int width, int height);
-    virtual void paint(Graphics& g);
+    void paint(Graphics& g) override;
     
-    virtual void newMeasurementReady(const VCOTuner::measurement_t& m);
+    virtual void newMeasurementReady(const VCOTuner::measurement_t& m) override;
     void measurementFailed (int midiPitch, vcotuner::MeasurementError reason) override;
 
     void clearCache() { measurements.clear(); failedPitches.clear(); }

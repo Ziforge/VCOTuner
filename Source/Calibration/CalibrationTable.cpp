@@ -16,10 +16,6 @@ CalibrationTable::CalibrationTable()
     calibrationDate = Time::getCurrentTime();
 }
 
-CalibrationTable::~CalibrationTable()
-{
-}
-
 void CalibrationTable::addEntry(const Entry& entry)
 {
     entries.push_back(entry);
@@ -189,7 +185,11 @@ std::vector<double> CalibrationTable::getPolynomialCoefficients(int degree) cons
     // Build normal equations matrix
     // We're fitting: correction = a0 + a1*x + a2*x^2 + ... where x = midiNote
 
-    int m = degree + 1;
+    // size_t throughout: these are container indices, and mixing them with
+    // int is what -Wsign-conversion was flagging on every subscript. The back
+    // substitution below uses the standard unsigned reverse-loop idiom rather
+    // than a signed counter that has to end at -1.
+    const size_t m = (size_t) (degree + 1);
     std::vector<std::vector<double>> A(m, std::vector<double>(m, 0.0));
     std::vector<double> b(m, 0.0);
 
@@ -198,13 +198,12 @@ std::vector<double> CalibrationTable::getPolynomialCoefficients(int degree) cons
         double x = entry.midiNote;
         double y = entry.correctionOffset;
 
-        for (int i = 0; i < m; ++i)
+        for (size_t i = 0; i < m; ++i)
         {
-            for (int j = 0; j < m; ++j)
-            {
-                A[i][j] += std::pow(x, i + j);
-            }
-            b[i] += y * std::pow(x, i);
+            for (size_t j = 0; j < m; ++j)
+                A[i][j] += std::pow(x, (double) (i + j));
+
+            b[i] += y * std::pow(x, (double) i);
         }
     }
 
@@ -212,11 +211,11 @@ std::vector<double> CalibrationTable::getPolynomialCoefficients(int degree) cons
     std::vector<double> coefficients(m, 0.0);
 
     // Forward elimination
-    for (int k = 0; k < m; ++k)
+    for (size_t k = 0; k < m; ++k)
     {
         // Find pivot
-        int maxRow = k;
-        for (int i = k + 1; i < m; ++i)
+        size_t maxRow = k;
+        for (size_t i = k + 1; i < m; ++i)
         {
             if (std::abs(A[i][k]) > std::abs(A[maxRow][k]))
                 maxRow = i;
@@ -228,20 +227,20 @@ std::vector<double> CalibrationTable::getPolynomialCoefficients(int degree) cons
             return {};  // Singular matrix
 
         // Eliminate column
-        for (int i = k + 1; i < m; ++i)
+        for (size_t i = k + 1; i < m; ++i)
         {
             double factor = A[i][k] / A[k][k];
-            for (int j = k; j < m; ++j)
+            for (size_t j = k; j < m; ++j)
                 A[i][j] -= factor * A[k][j];
             b[i] -= factor * b[k];
         }
     }
 
     // Back substitution
-    for (int i = m - 1; i >= 0; --i)
+    for (size_t i = m; i-- > 0; )
     {
         coefficients[i] = b[i];
-        for (int j = i + 1; j < m; ++j)
+        for (size_t j = i + 1; j < m; ++j)
             coefficients[i] -= A[i][j] * coefficients[j];
         coefficients[i] /= A[i][i];
     }

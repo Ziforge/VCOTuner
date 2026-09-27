@@ -65,6 +65,8 @@ private:
         start of every run (tunerStarted) and rebuilt from tuner.getFailures()
         as failures come in, so it always reflects the current sweep only. */
     Label failureLabel;
+    Label pitchSourceLabel;
+    ComboBox pitchSource;
     Label regimeLabel;
     ComboBox regime;
     Label resolutionLabel;

@@ -31,10 +31,10 @@ void Visualizer::paint(juce::Graphics &g, int width, int height)
     {
         // Draw empty state message
         g.setColour(ModernLookAndFeel::Colors::textDim);
-        g.setFont(Font(18.0f));
-        g.drawText("No measurement data yet", 0, height / 2 - 30, width, 30, juce::Justification::centred);
-        g.setFont(Font(14.0f));
-        g.drawText("Press Start to begin measuring", 0, height / 2, width, 30, juce::Justification::centred);
+        g.setFont(Font(FontOptions(18.0f)));
+        g.drawText("No measurement data yet", juce::Rectangle<float>(0, height / 2 - 30, width, 30), juce::Justification::centred);
+        g.setFont(Font(FontOptions(14.0f)));
+        g.drawText("Press Start to begin measuring", juce::Rectangle<float>(0, height / 2, width, 30), juce::Justification::centred);
         return;
     }
 
@@ -68,8 +68,8 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
     if (measurements.size() == 0)
     {
         g.setColour(ModernLookAndFeel::Colors::textDim);
-        g.setFont(Font(18.0f));
-        g.drawText("No Data", 0, 0, width, height, juce::Justification::centred);
+        g.setFont(Font(FontOptions(18.0f)));
+        g.drawText("No Data", juce::Rectangle<float>(0, 0, width, height), juce::Justification::centred);
         return;
     }
 
@@ -151,11 +151,16 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
             lineText += "c";
 
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
-        g.setFont(Font(11.0f));
+        g.setFont(Font(FontOptions(11.0f)));
         g.drawText(lineText, juce::Rectangle<float>(0, yFlip(float(linePos) + 7), sidebarWidth - 6, 14), Justification::centredRight);
 
-        // don't overwrite maximum "in-tune" lines
-        if (y * lineInterval == allowedPitchOffset || y * lineInterval == -allowedPitchOffset)
+        // don't overwrite maximum "in-tune" lines. Both sides are computed,
+        // so an exact comparison is a coin toss on the last bit and the skip
+        // silently fails to fire; compare against a fraction of the spacing
+        // between lines instead.
+        const double sameLine = lineInterval * 1.0e-6;
+        if (std::abs(y * lineInterval - allowedPitchOffset) < sameLine
+            || std::abs(y * lineInterval + allowedPitchOffset) < sameLine)
             continue;
 
         g.setColour(ModernLookAndFeel::Colors::panelLight.withAlpha(0.3f));
@@ -269,8 +274,8 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
 
     // Draw the X-Axis label
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(12.0f));
-    g.drawText("MIDI Note", 0, height - bottomBarHeight, (int)sidebarWidth - 10, bottomBarHeight, Justification::centredRight);
+    g.setFont(Font(FontOptions(12.0f)));
+    g.drawText("MIDI Note", juce::Rectangle<float>(0, height - bottomBarHeight, (int)sidebarWidth - 10, bottomBarHeight), Justification::centredRight);
 
     // Draw note labels on X axis
     const int numPitchTextIntervals = 5;
@@ -301,7 +306,7 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
     for (int i = startLine; i <= endLine; i += pitchTextInterval)
     {
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
-        g.setFont(Font(11.0f));
+        g.setFont(Font(FontOptions(11.0f)));
         float textWidth = GlyphArrangement::getStringWidth(g.getCurrentFont(), String(measurements[i].midiPitch));
         float xLeft = sidebarWidth + i * float(columnWidth);
         float x = xLeft + float(columnWidth) / 2.0f - textWidth / 2.0f;
@@ -342,8 +347,8 @@ void Visualizer::paintWithFixedScaling(Graphics& g, int width, int height, doubl
 
                 // Draw reference label
                 g.setColour(ModernLookAndFeel::Colors::accentAlt);
-                g.setFont(Font(10.0f, Font::bold));
-                g.drawText("REF", xLeft, height - bottomBarHeight + 22, float(columnWidth), 12, Justification::centred);
+                g.setFont(Font(FontOptions(10.0f, Font::bold)));
+                g.drawText("REF", juce::Rectangle<float>(xLeft, height - bottomBarHeight + 22, float(columnWidth), 12), Justification::centred);
             }
         }
     }
@@ -380,16 +385,16 @@ void Visualizer::drawTopInfoPanel(Graphics& g, int width, int panelHeight)
 
     // Section 1: Current Note & Frequency
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(10.0f));
-    g.drawText("CURRENT NOTE", startX, topY, sectionWidth, 12, Justification::left);
+    g.setFont(Font(FontOptions(10.0f)));
+    g.drawText("CURRENT NOTE", juce::Rectangle<float>(startX, topY, sectionWidth, 12), Justification::left);
 
     g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(Font(24.0f, Font::bold));
+    g.setFont(Font(FontOptions(24.0f, Font::bold)));
     String noteName = MidiMessage::getMidiNoteName(current.midiPitch, true, true, 4);
-    g.drawText(noteName, startX, topY + 14, sectionWidth, 28, Justification::left);
+    g.drawText(noteName, juce::Rectangle<float>(startX, topY + 14, sectionWidth, 28), Justification::left);
 
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(12.0f));
+    g.setFont(Font(FontOptions(12.0f)));
 
     // Qualify the absolute frequency with the clock correction that produced
     // it. This is the one number the correction moves -- the cents offsets are
@@ -401,13 +406,13 @@ void Visualizer::drawTopInfoPanel(Graphics& g, int width, int panelHeight)
     if (std::abs(ppm) >= 0.5)
         freqText += (ppm > 0 ? "  clk +" : "  clk ") + String(ppm, 0) + "ppm";
 
-    g.drawText(freqText, startX, topY + 42, sectionWidth, 16, Justification::left);
+    g.drawText(freqText, juce::Rectangle<float>(startX, topY + 42, sectionWidth, 16), Justification::left);
 
     // Section 2: Current Error (cents)
     startX += sectionWidth;
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(10.0f));
-    g.drawText("PITCH ERROR", startX, topY, sectionWidth, 12, Justification::left);
+    g.setFont(Font(FontOptions(10.0f)));
+    g.drawText("PITCH ERROR", juce::Rectangle<float>(startX, topY, sectionWidth, 12), Justification::left);
 
     float currentCents = (float)(current.pitchOffset * 100.0);
     Colour errorColor;
@@ -419,9 +424,9 @@ void Visualizer::drawTopInfoPanel(Graphics& g, int width, int panelHeight)
         errorColor = ModernLookAndFeel::Colors::meterBad;
 
     g.setColour(errorColor);
-    g.setFont(Font(24.0f, Font::bold));
+    g.setFont(Font(FontOptions(24.0f, Font::bold)));
     String errorStr = (currentCents >= 0 ? "+" : "") + String(currentCents, 1) + "c";
-    g.drawText(errorStr, startX, topY + 14, sectionWidth, 28, Justification::left);
+    g.drawText(errorStr, juce::Rectangle<float>(startX, topY + 14, sectionWidth, 28), Justification::left);
 
     // Mini tuning meter
     Rectangle<float> meterBounds(startX, topY + 46, sectionWidth - 20, 12);
@@ -430,29 +435,28 @@ void Visualizer::drawTopInfoPanel(Graphics& g, int width, int panelHeight)
     // Section 3: Statistics
     startX += sectionWidth;
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(10.0f));
-    g.drawText("STATISTICS", startX, topY, sectionWidth, 12, Justification::left);
+    g.setFont(Font(FontOptions(10.0f)));
+    g.drawText("STATISTICS", juce::Rectangle<float>(startX, topY, sectionWidth, 12), Justification::left);
 
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(11.0f));
-    g.drawText("Max: " + String(maxOffset * 100, 1) + "c", startX, topY + 16, sectionWidth, 14, Justification::left);
-    g.drawText("Min: " + String(minOffset * 100, 1) + "c", startX, topY + 30, sectionWidth, 14, Justification::left);
-    g.drawText("Avg: " + String(avgOffset * 100, 1) + "c", startX, topY + 44, sectionWidth, 14, Justification::left);
+    g.setFont(Font(FontOptions(11.0f)));
+    g.drawText("Max: " + String(maxOffset * 100, 1) + "c", juce::Rectangle<float>(startX, topY + 16, sectionWidth, 14), Justification::left);
+    g.drawText("Min: " + String(minOffset * 100, 1) + "c", juce::Rectangle<float>(startX, topY + 30, sectionWidth, 14), Justification::left);
+    g.drawText("Avg: " + String(avgOffset * 100, 1) + "c", juce::Rectangle<float>(startX, topY + 44, sectionWidth, 14), Justification::left);
 
     // Section 4: Progress
     startX += sectionWidth;
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(10.0f));
-    g.drawText("PROGRESS", startX, topY, sectionWidth, 12, Justification::left);
+    g.setFont(Font(FontOptions(10.0f)));
+    g.drawText("PROGRESS", juce::Rectangle<float>(startX, topY, sectionWidth, 12), Justification::left);
 
     g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(Font(18.0f, Font::bold));
-    g.drawText(String(measurements.size()) + " pts", startX, topY + 14, sectionWidth, 24, Justification::left);
+    g.setFont(Font(FontOptions(18.0f, Font::bold)));
+    g.drawText(String(measurements.size()) + " pts", juce::Rectangle<float>(startX, topY + 14, sectionWidth, 24), Justification::left);
 
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(11.0f));
-    g.drawText("Range: " + String(measurements[0].midiPitch) + "-" + String(measurements.getLast().midiPitch),
-               startX, topY + 42, sectionWidth, 14, Justification::left);
+    g.setFont(Font(FontOptions(11.0f)));
+    g.drawText("Range: " + String(measurements[0].midiPitch) + "-" + String(measurements.getLast().midiPitch), juce::Rectangle<float>(startX, topY + 42, sectionWidth, 14), Justification::left);
 }
 
 void Visualizer::paint(Graphics& g)
@@ -520,13 +524,13 @@ void Visualizer::drawTunerDial(Graphics& g, Rectangle<float> bounds, float cents
     // Draw note name - large and prominent
     String noteName = MidiMessage::getMidiNoteName(midiNote, true, true, 4);
     g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(Font(48.0f, Font::bold));
-    g.drawText(noteName, bounds.getX(), bounds.getY() + 15, bounds.getWidth(), 50, Justification::centred);
+    g.setFont(Font(FontOptions(48.0f, Font::bold)));
+    g.drawText(noteName, juce::Rectangle<float>(bounds.getX(), bounds.getY() + 15, bounds.getWidth(), 50), Justification::centred);
 
     // Draw frequency
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(16.0f));
-    g.drawText(String(frequency, 2) + " Hz", bounds.getX(), bounds.getY() + 60, bounds.getWidth(), 20, Justification::centred);
+    g.setFont(Font(FontOptions(16.0f)));
+    g.drawText(String(frequency, 2) + " Hz", juce::Rectangle<float>(bounds.getX(), bounds.getY() + 60, bounds.getWidth(), 20), Justification::centred);
 
     // Draw cents value below the dial
     Colour centsColor;
@@ -538,17 +542,17 @@ void Visualizer::drawTunerDial(Graphics& g, Rectangle<float> bounds, float cents
         centsColor = ModernLookAndFeel::Colors::meterBad;
 
     g.setColour(centsColor);
-    g.setFont(Font(28.0f, Font::bold));
+    g.setFont(Font(FontOptions(28.0f, Font::bold)));
     String centsStr = (cents >= 0 ? "+" : "") + String(cents, 1) + " cents";
-    g.drawText(centsStr, bounds.getX(), bounds.getBottom() - 50, bounds.getWidth(), 30, Justification::centred);
+    g.drawText(centsStr, juce::Rectangle<float>(bounds.getX(), bounds.getBottom() - 50, bounds.getWidth(), 30), Justification::centred);
 
     // Draw flat/sharp indicators
-    g.setFont(Font(18.0f));
+    g.setFont(Font(FontOptions(18.0f)));
     g.setColour(cents < -5 ? ModernLookAndFeel::Colors::meterWarn : ModernLookAndFeel::Colors::textDim);
-    g.drawText("FLAT", bounds.getX() + 20, centerY - 10, 60, 20, Justification::left);
+    g.drawText("FLAT", juce::Rectangle<float>(bounds.getX() + 20, centerY - 10, 60, 20), Justification::left);
 
     g.setColour(cents > 5 ? ModernLookAndFeel::Colors::meterWarn : ModernLookAndFeel::Colors::textDim);
-    g.drawText("SHARP", bounds.getRight() - 80, centerY - 10, 60, 20, Justification::right);
+    g.drawText("SHARP", juce::Rectangle<float>(bounds.getRight() - 80, centerY - 10, 60, 20), Justification::right);
 }
 
 void Visualizer::drawTunerArc(Graphics& g, float centerX, float centerY, float radius, float cents)

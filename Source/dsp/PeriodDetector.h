@@ -8,7 +8,6 @@ namespace vcotuner
 
 struct PeriodDetectorConfig
 {
-    double sampleRate         = 48000.0;
     double hysteresisFraction = 0.1;    // of measured amplitude
     int    stabilityWindow    = 5;      // consecutive periods compared
     double stabilityTolerance = 0.1;    // 10% spread allowed
@@ -16,6 +15,25 @@ struct PeriodDetectorConfig
     int    warmupSamples      = 2048;   // level-tracking window
     double silenceFloor       = 1e-4;   // amplitude below this => silent
     int    requiredPeriods    = 10;     // valid periods needed for 'stable'
+
+    /** How fast the trigger level follows the signal, as a blend coefficient
+        applied once per cycle. 0 disables tracking and latches the level for
+        the whole measurement.
+
+        The level is latched at the end of warm-up, and an oscillator whose DC
+        offset drifts during a long capture then crosses a threshold that no
+        longer sits at the middle of its waveform. That does not merely add
+        noise: the crossing happens at a progressively different phase each
+        cycle, so the crossing times acquire a ramp and the fitted period comes
+        out biased. Following the drift keeps the crossing at a fixed phase.
+
+        Updated only between cycles, never within one, so the threshold a
+        period is measured against is the same at both of its ends. The rate is
+        slow for the reason the level was latched in the first place: a
+        threshold that chases noise would put that noise straight into the
+        crossing times.
+    */
+    double midpointTrackingRate = 0.05;
 
     /** Share of the collected periods allowed to sit off the cycle grid before
         the note is called unstable. A dropout inserts or removes one crossing
@@ -76,6 +94,7 @@ public:
 
 private:
     void finishWarmup();
+    void trackLevel() noexcept;
     void processCrossing (double s);
     void recordCrossing (double position);
     void updateStability();
@@ -91,6 +110,13 @@ private:
     double    levelMidpoint  = 0.0;
     double    levelAmplitude = 0.0;
     bool      haveLevel      = false;
+
+    // Extent of the cycle currently being collected, folded into the trigger
+    // level at each crossing. Separate from runningMin/Max, which belong to
+    // warm-up and stop being updated once it ends.
+    double    cycleMin       =  1e30;
+    double    cycleMax       = -1e30;
+    bool      haveCycleExtent = false;
 
     std::vector<double> periods;
 

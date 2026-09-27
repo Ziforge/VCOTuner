@@ -56,6 +56,9 @@ void PeriodDetector::reset (const PeriodDetectorConfig& config)
     levelMidpoint   = 0.0;
     levelAmplitude  = 0.0;
     haveLevel       = false;
+    cycleMin        =  1e30;
+    cycleMax        = -1e30;
+    haveCycleExtent = false;
 
     periods.clear();
     periods.reserve ((size_t) config.maxPeriods);
@@ -92,7 +95,18 @@ void PeriodDetector::processBlock (const float* samples, int numSamples)
         }
 
         if (haveLevel && currentStatus == DetectorStatus::collecting)
+        {
+            // Extent of the cycle in progress. Two compares per sample, and
+            // only once warm-up has produced a level to track from.
+            if (cfg.midpointTrackingRate > 0.0)
+            {
+                if (s < cycleMin) cycleMin = s;
+                if (s > cycleMax) cycleMax = s;
+                haveCycleExtent = true;
+            }
+
             processCrossing (s);
+        }
 
         ++sampleCounter;
     }
@@ -111,6 +125,38 @@ void PeriodDetector::finishWarmup()
     }
 
     haveLevel = true;
+
+    // The warm-up window is the first cycle the tracker sees; start it from
+    // what warm-up already measured rather than from nothing.
+    cycleMin = runningMin;
+    cycleMax = runningMax;
+    haveCycleExtent = true;
+}
+
+void PeriodDetector::trackLevel() noexcept
+{
+    // Called at a crossing, so the level only ever changes between cycles:
+    // the threshold a period was measured against is the same at both ends of
+    // that period, and the trailing period is unaffected by the update.
+    if (cfg.midpointTrackingRate > 0.0 && haveCycleExtent && cycleMax > cycleMin)
+    {
+        const double cycleMid = (cycleMax + cycleMin) * 0.5;
+        const double cycleAmp = (cycleMax - cycleMin) * 0.5;
+
+        // A cycle that collapsed into the noise floor says nothing useful
+        // about where the middle of the waveform is; leave the level alone
+        // rather than dragging it towards an artefact.
+        if (cycleAmp >= cfg.silenceFloor)
+        {
+            const double rate = cfg.midpointTrackingRate;
+            levelMidpoint  += rate * (cycleMid - levelMidpoint);
+            levelAmplitude += rate * (cycleAmp - levelAmplitude);
+        }
+    }
+
+    cycleMin =  1e30;
+    cycleMax = -1e30;
+    haveCycleExtent = false;
 }
 
 void PeriodDetector::processCrossing (double s)
@@ -154,6 +200,8 @@ void PeriodDetector::recordCrossing (double position)
         periods.push_back (position - lastCrossing);
 
     lastCrossing = position;
+
+    trackLevel();
 
     updateStability();
 }

@@ -9,7 +9,7 @@
 
 #include "TunerDisplay.h"
 
-TunerDisplay::TunerDisplay(VCOTuner* t) : tuner(t)
+TunerDisplay::TunerDisplay(VCOTuner*)
 {
 }
 
@@ -41,16 +41,16 @@ void TunerDisplay::paint(Graphics& g)
     g.setColour(isActive ? ModernLookAndFeel::Colors::meter : ModernLookAndFeel::Colors::meterBad.withAlpha(0.5f));
     g.fillEllipse(headerArea.getX(), headerArea.getCentreY() - 6, 12, 12);
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(12.0f));
-    g.drawText(isActive ? "MEASURING" : "STANDBY", headerArea.getX() + 18, headerArea.getY(), 100, 40, Justification::centredLeft);
+    g.setFont(Font(FontOptions(12.0f)));
+    g.drawText(isActive ? "MEASURING" : "STANDBY", juce::Rectangle<float>(headerArea.getX() + 18, headerArea.getY(), 100, 40), Justification::centredLeft);
 
     // MIDI Note number (right)
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(11.0f));
-    g.drawText("MIDI", headerArea.getRight() - 80, headerArea.getY() + 2, 40, 16, Justification::right);
+    g.setFont(Font(FontOptions(11.0f)));
+    g.drawText("MIDI", juce::Rectangle<float>(headerArea.getRight() - 80, headerArea.getY() + 2, 40, 16), Justification::right);
     g.setColour(hasSignal ? ModernLookAndFeel::Colors::textPrimary : ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(20.0f, Font::bold));
-    g.drawText(hasSignal ? String(currentMidiNote) : "--", headerArea.getRight() - 40, headerArea.getY(), 40, 40, Justification::centred);
+    g.setFont(Font(FontOptions(20.0f, Font::bold)));
+    g.drawText(hasSignal ? String(currentMidiNote) : "--", juce::Rectangle<float>(headerArea.getRight() - 40, headerArea.getY(), 40, 40), Justification::centred);
 
     contentBounds.removeFromTop(10);
 
@@ -64,7 +64,7 @@ void TunerDisplay::paint(Graphics& g)
 
     String noteName = hasSignal ? MidiMessage::getMidiNoteName(currentMidiNote, true, true, 4) : "--";
     g.setColour(hasSignal ? ModernLookAndFeel::Colors::accent : ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(64.0f, Font::bold));
+    g.setFont(Font(FontOptions(64.0f, Font::bold)));
     g.drawText(noteName, noteBg, Justification::centred);
 
     contentBounds.removeFromTop(15);
@@ -119,19 +119,19 @@ void TunerDisplay::paint(Graphics& g)
 
     // Label
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(11.0f));
-    g.drawText("PITCH ERROR", centsSection.getX(), centsSection.getY(), centsSection.getWidth(), 16, Justification::centred);
+    g.setFont(Font(FontOptions(11.0f)));
+    g.drawText("PITCH ERROR", juce::Rectangle<float>(centsSection.getX(), centsSection.getY(), centsSection.getWidth(), 16), Justification::centred);
 
     // Large cents value
     g.setColour(centsColor);
-    g.setFont(Font(48.0f, Font::bold));
+    g.setFont(Font(FontOptions(48.0f, Font::bold)));
     String centsText = hasSignal ? ((currentCents >= 0 ? "+" : "") + String(currentCents, 2)) : "+---.--";
-    g.drawText(centsText, centsSection.getX(), centsSection.getY() + 18, centsSection.getWidth(), 55, Justification::centred);
+    g.drawText(centsText, juce::Rectangle<float>(centsSection.getX(), centsSection.getY() + 18, centsSection.getWidth(), 55), Justification::centred);
 
     // Unit label
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(16.0f));
-    g.drawText("cents", centsSection.getX(), centsSection.getY() + 70, centsSection.getWidth(), 20, Justification::centred);
+    g.setFont(Font(FontOptions(16.0f)));
+    g.drawText("cents", juce::Rectangle<float>(centsSection.getX(), centsSection.getY() + 70, centsSection.getWidth(), 20), Justification::centred);
 
     contentBounds.removeFromTop(10);
 
@@ -183,26 +183,26 @@ void TunerDisplay::drawMeasurementBox(Graphics& g, Rectangle<float> bounds, cons
 
     // Label
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(10.0f));
-    g.drawText(label, bounds.getX(), bounds.getY() + 8, bounds.getWidth(), 14, Justification::centred);
+    g.setFont(Font(FontOptions(10.0f)));
+    g.drawText(label, juce::Rectangle<float>(bounds.getX(), bounds.getY() + 8, bounds.getWidth(), 14), Justification::centred);
 
     // Value
     g.setColour(valueColor);
-    g.setFont(Font(18.0f, Font::bold));
-    g.drawText(value, bounds.getX(), bounds.getY() + 28, bounds.getWidth(), 50, Justification::centred);
+    g.setFont(Font(FontOptions(18.0f, Font::bold)));
+    g.drawText(value, juce::Rectangle<float>(bounds.getX(), bounds.getY() + 28, bounds.getWidth(), 50), Justification::centred);
 }
 
 void TunerDisplay::drawSmallDataBox(Graphics& g, Rectangle<float> bounds, const String& label, const String& value)
 {
     // Label
     g.setColour(ModernLookAndFeel::Colors::textDim);
-    g.setFont(Font(9.0f));
-    g.drawText(label, bounds.getX(), bounds.getY(), bounds.getWidth(), 14, Justification::centred);
+    g.setFont(Font(FontOptions(9.0f)));
+    g.drawText(label, juce::Rectangle<float>(bounds.getX(), bounds.getY(), bounds.getWidth(), 14), Justification::centred);
 
     // Value
     g.setColour(ModernLookAndFeel::Colors::textSecondary);
-    g.setFont(Font(14.0f, Font::bold));
-    g.drawText(value, bounds.getX(), bounds.getY() + 16, bounds.getWidth(), 40, Justification::centred);
+    g.setFont(Font(FontOptions(14.0f, Font::bold)));
+    g.drawText(value, juce::Rectangle<float>(bounds.getX(), bounds.getY() + 16, bounds.getWidth(), 40), Justification::centred);
 }
 
 void TunerDisplay::drawPrecisionMeter(Graphics& g, Rectangle<float> bounds)
@@ -218,7 +218,7 @@ void TunerDisplay::drawPrecisionMeter(Graphics& g, Rectangle<float> bounds)
     float meterWidth = bounds.getWidth();
 
     // Tick marks and labels
-    g.setFont(Font(9.0f));
+    g.setFont(Font(FontOptions(9.0f)));
     for (int i = -5; i <= 5; ++i)
     {
         float x = centerX + (i / 5.0f) * (meterWidth / 2.0f - 10);
@@ -234,7 +234,7 @@ void TunerDisplay::drawPrecisionMeter(Graphics& g, Rectangle<float> bounds)
         {
             g.setColour(ModernLookAndFeel::Colors::textDim);
             String labelText = (i == 0) ? "0" : String(i * 10);
-            g.drawText(labelText, x - 15, bounds.getBottom() + 2, 30, 12, Justification::centred);
+            g.drawText(labelText, juce::Rectangle<float>(x - 15, bounds.getBottom() + 2, 30, 12), Justification::centred);
         }
     }
 

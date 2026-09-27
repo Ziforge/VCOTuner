@@ -58,7 +58,7 @@ String OrnamentCrimeExporter::generateCHeaderString(const CalibrationTable& tabl
         float voltage = OC_MIN_VOLTAGE + i;
         if (i == 10) voltage = OC_MAX_VOLTAGE;  // Last point is +6V
 
-        header += "    " + String(ocData.dacValues[i]);
+        header += "    " + String(ocData.dacValues[(size_t) i]);
         if (i < 10) header += ",";
         header += "   // " + String(voltage >= 0 ? "+" : "") + String(static_cast<int>(voltage)) + "V\n";
     }
@@ -99,10 +99,10 @@ String OrnamentCrimeExporter::generateReadableString(const CalibrationTable& tab
         if (i == 10) voltage = OC_MAX_VOLTAGE;
 
         String voltStr = String(voltage >= 0 ? "+" : "") + String(static_cast<int>(voltage)) + "V";
-        float actualV = dacValueToVoltage(ocData.dacValues[i]);
+        float actualV = dacValueToVoltage(ocData.dacValues[(size_t) i]);
 
         text += String(voltStr).paddedRight(' ', 5);
-        text += "  DAC: " + String(ocData.dacValues[i]).paddedLeft(' ', 5);
+        text += "  DAC: " + String(ocData.dacValues[(size_t) i]).paddedLeft(' ', 5);
         text += "  (actual: " + String(actualV, 4) + "V)\n";
     }
 
@@ -130,7 +130,7 @@ OrnamentCrimeExporter::OCCalibrationData OrnamentCrimeExporter::convertToOCForma
         float correctedVoltage = table.getCorrectedVoltage(midiPitch);
 
         // Convert to DAC value
-        ocData.dacValues[i] = voltageToDACValue(correctedVoltage);
+        ocData.dacValues[(size_t) i] = voltageToDACValue(correctedVoltage);
     }
 
     return ocData;
@@ -145,7 +145,7 @@ CalibrationTable OrnamentCrimeExporter::importFromOCData(const OCCalibrationData
         float targetVoltage = OC_MIN_VOLTAGE + i;
         if (i == 10) targetVoltage = OC_MAX_VOLTAGE;
 
-        float actualVoltage = dacValueToVoltage(ocData.dacValues[i]);
+        float actualVoltage = dacValueToVoltage(ocData.dacValues[(size_t) i]);
 
         // Convert to MIDI note
         int midiNote = 60 + static_cast<int>(targetVoltage * 12.0f);

@@ -16,6 +16,7 @@ TAB_OK = ('        g.setColour(Colors::panelLight.withAlpha(0.3f));\n'
 FONT_OK = 'GlyphArrangement::getStringWidth(g.getCurrentFont(), String(measurements[i].midiPitch))'
 CV_OK = '            cvOutputManager->fillOutputBuffer(outputChannelData[0], numSamples);'
 CLOCK_OK = 'fitFrequency(detector, effectiveSampleRate(),'
+SWEEP_OK = '    if (pitchSource == PitchSource::cvOutput)\n    {\n        if (cvOutputManager == nullptr)'
 
 CASES = [
     ('no-raw-utf8-literals', 'Source/TunerDisplay.cpp',
@@ -28,6 +29,8 @@ CASES = [
      CV_OK, '            /* moved below the early returns */'),
     ('frequency-uses-corrected-clock', 'Source/VCOTuner.cpp',
      CLOCK_OK, 'fitFrequency(detector, sampleRate,'),
+    ('sweep-honours-pitch-source', 'Source/VCOTuner.cpp',
+     SWEEP_OK, '    if (false)\n    {\n        if (cvOutputManager == nullptr)'),
 ]
 
 

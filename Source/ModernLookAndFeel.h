@@ -102,7 +102,7 @@ public:
         g.drawRoundedRectangle(bounds, cornerSize, 1.0f);
     }
 
-    void drawComboBox(Graphics& g, int width, int height, bool isButtonDown,
+    void drawComboBox(Graphics& g, int width, int height, bool /*isButtonDown*/,
                       int buttonX, int buttonY, int buttonW, int buttonH, ComboBox& box) override
     {
         auto bounds = Rectangle<int>(0, 0, width, height).toFloat().reduced(1.0f);
@@ -126,7 +126,7 @@ public:
         g.fillPath(arrow);
     }
 
-    void drawProgressBar(Graphics& g, ProgressBar& progressBar, int width, int height,
+    void drawProgressBar(Graphics& g, ProgressBar& /*progressBar*/, int width, int height,
                          double progress, const String& textToShow) override
     {
         auto bounds = Rectangle<float>(0, 0, (float)width, (float)height).reduced(1.0f);
@@ -155,14 +155,14 @@ public:
         if (textToShow.isNotEmpty())
         {
             g.setColour(Colors::textPrimary);
-            g.setFont(Font(12.0f));
+            g.setFont(Font(FontOptions(12.0f)));
             g.drawText(textToShow, bounds, Justification::centred, false);
         }
     }
 
     void drawLinearSlider(Graphics& g, int x, int y, int width, int height,
-                          float sliderPos, float minSliderPos, float maxSliderPos,
-                          const Slider::SliderStyle style, Slider& slider) override
+                          float sliderPos, float /*minSliderPos*/, float /*maxSliderPos*/,
+                          const Slider::SliderStyle /*style*/, Slider& /*slider*/) override
     {
         auto trackWidth = 4.0f;
         auto bounds = Rectangle<int>(x, y, width, height).toFloat();
@@ -198,9 +198,9 @@ public:
         g.fillRect(bounds);
     }
 
-    void drawTableHeaderColumn(Graphics& g, TableHeaderComponent& header, const String& columnName,
-                               int columnId, int width, int height, bool isMouseOver,
-                               bool isMouseDown, int columnFlags) override
+    void drawTableHeaderColumn(Graphics& g, TableHeaderComponent& /*header*/, const String& columnName,
+                               int /*columnId*/, int width, int height, bool isMouseOver,
+                               bool /*isMouseDown*/, int /*columnFlags*/) override
     {
         auto bounds = Rectangle<int>(0, 0, width, height);
 
@@ -214,27 +214,27 @@ public:
         g.drawLine((float)width - 1, 2, (float)width - 1, (float)height - 4);
 
         g.setColour(Colors::textPrimary);
-        g.setFont(Font(13.0f, Font::bold));
+        g.setFont(Font(FontOptions(13.0f, Font::bold)));
         g.drawText(columnName, bounds.reduced(4, 0), Justification::centredLeft, true);
     }
 
     Font getTextButtonFont(TextButton&, int buttonHeight) override
     {
-        return Font(jmin(14.0f, buttonHeight * 0.6f));
+        return Font(FontOptions(jmin(14.0f, buttonHeight * 0.6f)));
     }
 
-    Font getLabelFont(Label& label) override
+    Font getLabelFont(Label& /*label*/) override
     {
-        return Font(14.0f);
+        return Font(FontOptions(14.0f));
     }
 
     // Tab button styling
-    int getTabButtonBestWidth(TabBarButton& button, int tabDepth) override
+    int getTabButtonBestWidth(TabBarButton& /*button*/, int /*tabDepth*/) override
     {
         return 100;
     }
 
-    void drawTabButton(TabBarButton& button, Graphics& g, bool isMouseOver, bool isMouseDown) override
+    void drawTabButton(TabBarButton& button, Graphics& g, bool isMouseOver, bool /*isMouseDown*/) override
     {
         auto bounds = button.getLocalBounds().toFloat();
         bool isFrontTab = button.isFrontTab();
@@ -255,7 +255,7 @@ public:
 
         // Text
         g.setColour(isFrontTab ? Colors::textPrimary : Colors::textSecondary);
-        g.setFont(Font(14.0f, isFrontTab ? Font::bold : Font::plain));
+        g.setFont(Font(FontOptions(14.0f, isFrontTab ? Font::bold : Font::plain)));
         g.drawText(button.getButtonText(), bounds.reduced(4), Justification::centred);
     }
 

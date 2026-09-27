@@ -102,6 +102,15 @@ else
   gate "frequency-uses-corrected-clock" PASS
 fi
 
+# The sweep must honour the pitch source. If playPitch() stops dispatching on
+# it, CV silently stops driving the oscillator and every note goes out over
+# MIDI instead -- which looks like a patching mistake, not a code change.
+if awk '/void VCOTuner::playPitch/,/^\}/' "$ROOT/Source/VCOTuner.cpp" | grep -q 'PitchSource::cvOutput'; then
+  gate "sweep-honours-pitch-source" PASS
+else
+  gate "sweep-honours-pitch-source" FAIL "playPitch no longer dispatches on the pitch source"
+fi
+
 # The JUCE submodule must match what the tree pins, or the build is not the
 # build the gates think they are testing.
 PINNED=$(git -C "$ROOT" ls-files -s deps/JUCE | awk '{print $2}')

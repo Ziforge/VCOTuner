@@ -7,6 +7,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 
 add_executable(VCOTunerTests
+    CvScalingTests.cpp
     ClockCalibratorTests.cpp
     PeriodDetectorTests.cpp
     MeasurementStatisticsTests.cpp

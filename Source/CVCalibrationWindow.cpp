@@ -17,12 +17,12 @@
 // CVSetupScreen Implementation
 //==============================================================================
 
-CVSetupScreen::CVSetupScreen(CVCalibrationWindow* p, CVOutputManager* cv)
-    : parent(p), cvOutput(cv)
+CVSetupScreen::CVSetupScreen(CVCalibrationWindow* p, CVOutputManager*)
+    : parent(p)
 {
     // Title
     titleLabel.setText("CV Calibration Setup", dontSendNotification);
-    titleLabel.setFont(Font(24.0f, Font::bold));
+    titleLabel.setFont(Font(FontOptions(24.0f, Font::bold)));
     titleLabel.setJustificationType(Justification::centred);
     addAndMakeVisible(titleLabel);
 
@@ -200,7 +200,7 @@ CVRunningScreen::CVRunningScreen(CVCalibrationWindow* p, CalibrationEngine* e)
     : parent(p), engine(e), progressBar(progress)
 {
     titleLabel.setText("Calibration in Progress", dontSendNotification);
-    titleLabel.setFont(Font(24.0f, Font::bold));
+    titleLabel.setFont(Font(FontOptions(24.0f, Font::bold)));
     titleLabel.setJustificationType(Justification::centred);
     addAndMakeVisible(titleLabel);
 
@@ -315,10 +315,10 @@ void CVRunningScreen::paint(Graphics& g)
 
         // Labels
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
-        g.setFont(Font(10.0f));
-        g.drawText("+50c", historyArea.getX() - 40, historyArea.getY() - 10, 35, 20, Justification::right);
-        g.drawText("-50c", historyArea.getX() - 40, historyArea.getBottom() - 10, 35, 20, Justification::right);
-        g.drawText("0", historyArea.getX() - 20, centerY - 10, 15, 20, Justification::right);
+        g.setFont(Font(FontOptions(10.0f)));
+        g.drawText("+50c", juce::Rectangle<float>(historyArea.getX() - 40, historyArea.getY() - 10, 35, 20), Justification::right);
+        g.drawText("-50c", juce::Rectangle<float>(historyArea.getX() - 40, historyArea.getBottom() - 10, 35, 20), Justification::right);
+        g.drawText("0", juce::Rectangle<float>(historyArea.getX() - 20, centerY - 10, 15, 20), Justification::right);
     }
 }
 
@@ -406,7 +406,7 @@ CVResultsScreen::CVResultsScreen(CVCalibrationWindow* p, const CalibrationTable&
     : parent(p), calibrationTable(table)
 {
     titleLabel.setText("Calibration Results", dontSendNotification);
-    titleLabel.setFont(Font(24.0f, Font::bold));
+    titleLabel.setFont(Font(FontOptions(24.0f, Font::bold)));
     titleLabel.setJustificationType(Justification::centred);
     addAndMakeVisible(titleLabel);
 
@@ -532,7 +532,7 @@ void CVResultsScreen::paintRowBackground(Graphics& g, int rowNumber, int /*width
 void CVResultsScreen::paintCell(Graphics& g, int rowNumber, int columnId, int width, int height, bool /*rowIsSelected*/)
 {
     g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(Font(12.0f));
+    g.setFont(Font(FontOptions(12.0f)));
 
     if (rowNumber >= 0 && rowNumber < calibrationTable.getEntryCount())
     {
@@ -556,7 +556,7 @@ void CVResultsScreen::paintCell(Graphics& g, int rowNumber, int columnId, int wi
                 break;
         }
 
-        g.drawText(text, 4, 0, width - 8, height, Justification::centredLeft);
+        g.drawText(text, juce::Rectangle<float>(4, 0, width - 8, height), Justification::centredLeft);
     }
 }
 
@@ -564,8 +564,8 @@ void CVResultsScreen::paintCell(Graphics& g, int rowNumber, int columnId, int wi
 // CVCalibrationWindow Implementation
 //==============================================================================
 
-CVCalibrationWindow::CVCalibrationWindow(VCOTuner* t, CVOutputManager* cv, Visualizer* v)
-    : tuner(t), cvOutput(cv), visualizer(v)
+CVCalibrationWindow::CVCalibrationWindow(VCOTuner* t, CVOutputManager* cv, Visualizer*)
+    : tuner(t), cvOutput(cv)
 {
     engine = std::make_unique<CalibrationEngine>(tuner, cvOutput);
     showSetupScreen();

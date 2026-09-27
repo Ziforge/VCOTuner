@@ -496,3 +496,107 @@ TEST_CASE ("sustained jitter still fails, and is not mistaken for a glitch")
           << " outliers=" << detector.numOutliers());
     REQUIRE (detector.status() != DetectorStatus::stable);
 }
+
+//==============================================================================
+// Following the trigger level while the signal drifts.
+
+namespace
+{
+    /** A sine sitting on a DC offset that ramps, as an oscillator's does while
+        it warms up. Returns the measured frequency, or 0 if the note failed.
+    */
+    double measureWithDrift (double trackingRate, double freq, double driftPerSecond)
+    {
+        const double sampleRate = 48000.0;
+        const int numSamples = (int) (sampleRate * 260.0 / freq);   // ~260 cycles
+
+        std::vector<float> samples ((size_t) numSamples);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const double t = i / sampleRate;
+            samples[(size_t) i] = (float) (driftPerSecond * t
+                                           + 0.8 * std::sin (2.0 * kPi * freq * t));
+        }
+
+        PeriodDetectorConfig cfg;
+        cfg.warmupSamples          = (int) (2.0 * sampleRate / freq);
+        cfg.requiredPeriods        = 200;
+        cfg.midpointTrackingRate   = trackingRate;
+
+        PeriodDetector detector;
+        detector.reset (cfg);
+        detector.processBlock (samples.data(), numSamples);
+
+        if (detector.status() != DetectorStatus::stable)
+            return 0.0;
+
+        const auto fit = fitPeriod (detector.validPeriods(), detector.numValidPeriods());
+        return fit.valid ? sampleRate / fit.periodSamples : 0.0;
+    }
+
+    double centsFrom (double measured, double truth)
+    {
+        return (measured > 0.0) ? 1200.0 * std::log2 (measured / truth) : 0.0;
+    }
+}
+
+TEST_CASE ("a drifting DC offset biases a latched trigger level")
+{
+    // The mechanism, pinned before the fix is asserted. A threshold that stays
+    // put while the waveform moves under it is crossed at a progressively
+    // different phase each cycle, so the crossing times acquire a ramp and the
+    // fitted period comes out biased -- not merely noisy.
+    const double freq = 110.0;
+    const double latched = measureWithDrift (0.0, freq, 0.2);
+
+    REQUIRE (latched > 0.0);
+    REQUIRE (std::abs (centsFrom (latched, freq)) > 0.3);
+}
+
+TEST_CASE ("following the level between cycles removes most of that bias")
+{
+    const double freq = 110.0;
+    const double latched  = measureWithDrift (0.0,  freq, 0.2);
+    const double tracking = measureWithDrift (0.05, freq, 0.2);
+
+    REQUIRE (tracking > 0.0);
+
+    const double latchedErr  = std::abs (centsFrom (latched,  freq));
+    const double trackingErr = std::abs (centsFrom (tracking, freq));
+
+    INFO ("latched " << latchedErr << "c, tracking " << trackingErr << "c");
+    REQUIRE (trackingErr < 0.1);
+    REQUIRE (trackingErr < latchedErr / 5.0);
+}
+
+TEST_CASE ("tracking costs almost nothing when there is nothing to track")
+{
+    // A level that chases noise would put that noise into the crossing times,
+    // which is why the latch existed. Following the signal is not free -- the
+    // cycle extent moves by a fraction of a sample from cycle to cycle, so the
+    // level wobbles a little and that reaches the crossing times. The bound
+    // here is what that actually costs on a clean 440 Hz sine: about 3e-5
+    // cents, four orders of magnitude below the drift bias it removes and far
+    // below anything the rest of the chain can resolve.
+    const double freq = 440.0;
+
+    const double tracked = std::abs (centsFrom (measureWithDrift (0.05, freq, 0.0), freq));
+    const double latched = std::abs (centsFrom (measureWithDrift (0.0,  freq, 0.0), freq));
+
+    INFO ("tracked " << tracked << "c, latched " << latched << "c");
+    REQUIRE (latched < 1e-6);      // a fixed level on a clean signal is exact
+    REQUIRE (tracked < 1e-3);      // and following one is close enough to it
+}
+
+TEST_CASE ("severe drift at a low pitch fails outright with a latched level")
+{
+    // Worst case, and the reason this is not only about accuracy: a low note
+    // has few cycles per second for the drift to be spread over, so the
+    // waveform walks clear of a fixed threshold and stops crossing it at all.
+    // The note is lost rather than measured badly.
+    const double freq = 50.0;
+
+    REQUIRE (measureWithDrift (0.0,  freq, 0.2) == 0.0);   // never completes
+    REQUIRE (measureWithDrift (0.05, freq, 0.2) >  0.0);   // measured
+    REQUIRE (std::abs (centsFrom (measureWithDrift (0.05, freq, 0.2), freq)) < 0.2);
+}

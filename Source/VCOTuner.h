@@ -29,7 +29,7 @@ class VCOTuner: public ChangeListener,
 {
 public:
     VCOTuner(AudioDeviceManager* deviceManager);
-    ~VCOTuner();
+    ~VCOTuner() override;
     
     void toggleState();
     void start();
@@ -98,13 +98,13 @@ public:
                                            const AudioIODeviceCallbackContext& context) override;
     
     /** inherited from AudioIODeviceCallback */
-    virtual void audioDeviceAboutToStart (AudioIODevice* device);
+    virtual void audioDeviceAboutToStart (AudioIODevice* device) override;
     
     /** inherited from AudioIODeviceCallback */
-    virtual void audioDeviceStopped();
+    virtual void audioDeviceStopped() override;
     
     /** inherited from ChangeListener */
-    virtual void changeListenerCallback (ChangeBroadcaster* source);
+    virtual void changeListenerCallback (ChangeBroadcaster* source) override;
     
     class Listener
     {
@@ -149,11 +149,36 @@ public:
         return clockPpm.load (std::memory_order_relaxed);
     }
 
+    /** Where the pitch the oscillator is asked to play comes from.
+
+        midiOut sends MIDI notes for an external MIDI-to-CV interface to turn
+        into a voltage. cvOutput skips that interface and drives the
+        oscillator straight from a DC-coupled audio output, which takes a
+        second converter -- with its own scaling error -- out of the
+        measurement chain, and closes the loop: the same app sets the voltage
+        and measures what came back.
+    */
+    enum class PitchSource { midiOut, cvOutput };
+
+    void setPitchSource (PitchSource source);
+    PitchSource getPitchSource() const noexcept { return pitchSource; }
+
+    /** True when cvOutput is selected but nothing can carry it -- no manager,
+        or an audio device opened with no output channels. Checked before a
+        run rather than letting the sweep fail note by note.
+    */
+    bool cvOutputUnavailable() const noexcept;
+
     void setCVOutputManager(CVOutputManager* manager) { cvOutputManager = manager; }
     CVOutputManager* getCVOutputManager() { return cvOutputManager; }
 
 private:
     CVOutputManager* cvOutputManager = nullptr;
+    PitchSource pitchSource = PitchSource::midiOut;
+
+    // Recorded by the audio callback so the pre-run check can tell whether a
+    // CV-driven sweep has anywhere to send its voltage.
+    std::atomic<int> availableOutputChannels { 0 };
 
     // Written on the audio thread, read on the message thread. The calibrator's
     // running sums stay private to the audio thread and only the finished
@@ -180,10 +205,12 @@ private:
     ListenerList<Listener> listeners;
     
     // processes the state machine
-    virtual void timerCallback();
+    virtual void timerCallback() override;
     void switchState(State newState);
-    void trySendMidiNoteOn(int pitch);
-    void trySendMidiNoteOff(int pitch);
+    // Named for what they do, not for how: with cvOutput selected these set a
+    // voltage and no MIDI is sent at all.
+    void playPitch(int pitch);
+    void releasePitch(int pitch);
     /** hands the detector to the audio thread for a measurement at this pitch */
     void startDetectorRun(int pitch);
     /** records the failure, tells the listeners and moves on to the next note */
@@ -283,6 +310,7 @@ private:
         static const String bufferFull;
         static const String stableTimeout;
         static const String noFrequencyChangeBetweenMeasurements;
+        static const String cvOutputUnavailable;
         static const String noMidiDeviceAvailable;
         static const String audioDeviceStoppedDuringMeasurement;
     };

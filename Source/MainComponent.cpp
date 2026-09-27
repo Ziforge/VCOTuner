@@ -65,6 +65,23 @@ MainComponent::MainComponent() : tuner(&deviceManager), tunerDisplay(&tuner), di
     failureLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(&failureLabel);
 
+    pitchSourceLabel.setName("Pitch Source Label");
+    pitchSourceLabel.setText("Pitch source: ", dontSendNotification);
+    pitchSourceLabel.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(&pitchSourceLabel);
+
+    pitchSource.setName("PitchSourceSelector");
+    pitchSource.addItem("MIDI out", 1);
+    pitchSource.addItem("CV output", 2);
+    pitchSource.addListener(this);
+    pitchSource.setSelectedId(
+        getAppProperties().getUserSettings()->getIntValue("PitchSourceID", 1),
+        dontSendNotification);
+    tuner.setPitchSource(pitchSource.getSelectedId() == 2
+                         ? VCOTuner::PitchSource::cvOutput
+                         : VCOTuner::PitchSource::midiOut);
+    addAndMakeVisible(&pitchSource);
+
     regimeLabel.setName("Regime Label");
     regimeLabel.setText("Pitch range: ", dontSendNotification);
     regimeLabel.setJustificationType(juce::Justification::centredRight);
@@ -129,6 +146,7 @@ MainComponent::~MainComponent()
     tuner.removeListener(&display);
     getAppProperties().getUserSettings()->setValue("RegimeID", regime.getSelectedId());
     getAppProperties().getUserSettings()->setValue("ResolutionID", resolution.getSelectedId());
+    getAppProperties().getUserSettings()->setValue("PitchSourceID", pitchSource.getSelectedId());
 }
 
 
@@ -151,6 +169,12 @@ void MainComponent::resized()
     regimeLabel.setBounds(regime.getX() - 80 - borderWidth, audioSettings.getBottom() + borderWidth, 80, buttonHeight);
     resolution.setBounds(regimeLabel.getX() - 120 - borderWidth, audioSettings.getBottom() + borderWidth, 120, buttonHeight);
     resolutionLabel.setBounds(resolution.getX() - 80 - borderWidth, audioSettings.getBottom() + borderWidth, 80, buttonHeight);
+
+    // Shares the settings row rather than adding a second one: another row
+    // would push the tabbed area down, and TunerDisplay lays its readouts out
+    // at fixed offsets that then overflow the panel.
+    pitchSourceLabel.setBounds(borderWidth, audioSettings.getBottom() + borderWidth, 90, buttonHeight);
+    pitchSource.setBounds(pitchSourceLabel.getRight(), audioSettings.getBottom() + borderWidth, 120, buttonHeight);
 
     // failureLabel gets a fixed-height row at the very bottom, beneath the
     // tabbed area. jmax guards a window shrunk past MainWindow's resize limits
@@ -248,6 +272,30 @@ void MainComponent::comboBoxChanged (ComboBox* comboBoxThatHasChanged)
         display.clearCache();
         
         
+        if (wasRunning)
+        {
+            tuner.toggleState();
+            cycle = wasCycling;
+        }
+    }
+    else if (comboBoxThatHasChanged == &pitchSource)
+    {
+        // Switching where the pitch comes from mid-sweep would leave the
+        // oscillator held by one source and driven by the other, so stop and
+        // restart around the change the way the other settings do.
+        bool wasRunning = false;
+        bool wasCycling = cycle;
+        if (tuner.isRunning())
+        {
+            wasRunning = true;
+            tuner.toggleState();
+        }
+
+        tuner.setPitchSource(comboBoxThatHasChanged->getSelectedId() == 2
+                             ? VCOTuner::PitchSource::cvOutput
+                             : VCOTuner::PitchSource::midiOut);
+        display.clearCache();
+
         if (wasRunning)
         {
             tuner.toggleState();
@@ -434,7 +482,7 @@ void MainComponent::tunerFinished()
         tuner.toggleState();
 }
 
-void MainComponent::measurementFailed (int /*midiPitch*/, vcotuner::MeasurementError reason)
+void MainComponent::measurementFailed (int /*midiPitch*/, vcotuner::MeasurementError /*reason*/)
 {
     // Per-note failures are never fatal - only the reasons that abort the
     // whole sweep (routed through tunerStopped instead) are.
